@@ -142,7 +142,28 @@ class GameCandidate(BaseModel):
         extra = "ignore"
 
 
+class GamePriceSummary(BaseModel):
+    source: str = "steam_price_heybox"
+    appid: int | None = None
+    country: str = "CN"
+    current_price: str | None = None
+    lowest_price: str | None = None
+    lowest_date: str | None = None
+    lowest_discount: int | None = None
+    sale_status: str | None = None
+    region_summary: str | None = None
+    store_url: str | None = None
+    heybox_url: str | None = None
+    current_cny: float | None = None
+    lowest_cny: float | None = None
+
+    class Config:
+        extra = "ignore"
+
+
 class RankedGame(GameCandidate):
+    price_summary: GamePriceSummary | None = None
+
     @classmethod
     def from_candidate(
         cls,
@@ -151,8 +172,10 @@ class RankedGame(GameCandidate):
         reasons: list[str],
         warnings: list[str],
     ) -> "RankedGame":
-        data = candidate.dict()
+        dumper = getattr(candidate, "model_dump", None)
+        data = dumper() if dumper else candidate.dict()
         data["score"] = round(score, 2)
         data["reasons"] = reasons
         data["warnings"] = warnings
-        return cls.parse_obj(data)
+        validator = getattr(cls, "model_validate", None)
+        return validator(data) if validator else cls.parse_obj(data)

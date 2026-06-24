@@ -16,11 +16,15 @@ from .services.formatter import (
 )
 from .services.preference_parser import PreferenceParser
 from .services.recommender import GameRecommender
+from .services.steam_price_bridge import SteamPriceBridge
 from .storage.repository import SQLiteCacheRepository
 
 PLUGIN_NAME = "astrbot_plugin_game_recommender"
-PLUGIN_VERSION = "0.1.0"
-PLUGIN_DESCRIPTION = "基于 RAWG 数据和规则排序的自然语言多平台游戏推荐插件。"
+PLUGIN_VERSION = "0.2.0"
+PLUGIN_DESCRIPTION = (
+    "基于 RAWG 数据、规则排序和可选 Steam 价格增强的"
+    "自然语言游戏推荐插件。"
+)
 
 
 @register(
@@ -56,21 +60,30 @@ class GameRecommenderPlugin(Star):
         )
         self.preference_parser = PreferenceParser(context, self.provider_id)
         self.recommender = GameRecommender(self.rawg_client, max_results=self.max_results)
+        self.price_bridge = SteamPriceBridge(self.http_client, self.config)
 
     async def terminate(self) -> None:
         await self.http_client.aclose()
         logger.info("Game recommender plugin stopped.")
 
-    @filter.command("游戏推荐", desc="根据自然语言需求推荐游戏。")
+    @filter.command(
+        "gamerec",
+        alias={"游戏推荐"},
+        desc="根据自然语言需求推荐游戏。",
+    )
     async def recommend_games(self, event: AstrMessageEvent, query: GreedyStr):
         text = str(query).strip()
         if not text:
-            yield event.plain_result("请输入需求，例如：/游戏推荐 Switch 和 Steam 双人合作，不要恐怖，预算 100 以内")
+            yield event.plain_result(
+                "请输入需求，例如：/gamerec Switch 和 Steam 双人合作，"
+                "不要恐怖，预算 100 以内"
+            )
             return
 
         try:
             preference = await self.preference_parser.parse_preference(event, text)
             ranked_games = await self.recommender.recommend(preference)
+            ranked_games = await self.price_bridge.enrich_ranked_games(ranked_games, preference)
             message = await format_recommendations_with_llm(
                 self.context,
                 event,
@@ -93,11 +106,15 @@ class GameRecommenderPlugin(Star):
 
         yield event.plain_result(message)
 
-    @filter.command("游戏详情", desc="查询 RAWG 游戏基础资料。")
+    @filter.command(
+        "gamedesc",
+        alias={"游戏详情"},
+        desc="查询 RAWG 游戏基础资料和 Steam 价格。",
+    )
     async def game_detail(self, event: AstrMessageEvent, query: GreedyStr):
         title = str(query).strip()
         if not title:
-            yield event.plain_result("请输入游戏名，例如：/游戏详情 It Takes Two")
+            yield event.plain_result("请输入游戏名，例如：/gamedesc It Takes Two")
             return
 
         try:
@@ -111,6 +128,7 @@ class GameRecommenderPlugin(Star):
                 if candidate.rawg_id is not None
                 else candidate
             )
+            price_summary = await self.price_bridge.lookup(game.title)
         except RawgConfigurationError as exc:
             yield event.plain_result(str(exc))
             return
@@ -123,7 +141,7 @@ class GameRecommenderPlugin(Star):
             yield event.plain_result(f"游戏详情查询失败：{exc}")
             return
 
-        yield event.plain_result(format_game_detail(game))
+        yield event.plain_result(format_game_detail(game, price_summary))
 
 
 def safe_int(value: Any, default: int) -> int:
@@ -131,4 +149,3 @@ def safe_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
-

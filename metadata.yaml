@@ -1,13 +1,12 @@
 name: astrbot_plugin_game_recommender
 display_name: 游戏推荐助手
-desc: 基于 RAWG 数据和规则排序，根据自然语言偏好推荐 Steam、PlayStation、Nintendo Switch 等平台游戏。
+desc: 基于 RAWG 数据和规则排序，根据自然语言偏好推荐游戏，并可通过 Steam 价格查询插件补充当前价和史低。
 short_desc: 自然语言多平台游戏推荐。
 author: jiangxingda
-version: 0.1.0
+version: 0.2.0
 repo: ""
 support_platforms:
   - aiocqhttp
   - qq_official
   - telegram
   - discord
-

@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
-from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent
-from astrbot.api.star import Context
+try:
+    from astrbot.api import logger
+except ModuleNotFoundError:  # Allows formatter-only unit tests outside AstrBot.
+    logger = logging.getLogger(__name__)
 
-from ..storage.models import GameCandidate, GamePreference, RankedGame
+if TYPE_CHECKING:
+    from astrbot.api.event import AstrMessageEvent
+    from astrbot.api.star import Context
 
-DISCLAIMER = "以下推荐基于当前可查询到的数据，价格和平台信息可能因地区变化。"
+from ..storage.models import GameCandidate, GamePreference, GamePriceSummary, RankedGame
+
+DISCLAIMER = (
+    "以下推荐基于当前可查询到的数据，价格和平台信息可能因地区变化。"
+)
 
 
 def format_recommendations(
@@ -26,7 +34,10 @@ def format_recommendations(
         )
 
     lines = [
-        f"一句话结论：优先看前 {count} 款，它们和你的平台、类型与游玩人数偏好最接近。",
+        (
+            f"一句话结论：优先看前 {count} 款，"
+            "它们和你的平台、类型与游玩人数偏好最接近。"
+        ),
         DISCLAIMER,
     ]
     if preference.parse_warnings:
@@ -39,8 +50,8 @@ def format_recommendations(
 
 
 async def format_recommendations_with_llm(
-    context: Context,
-    event: AstrMessageEvent,
+    context: "Context",
+    event: "AstrMessageEvent",
     provider_id: str,
     preference: GamePreference,
     ranked_games: list[RankedGame],
@@ -55,25 +66,33 @@ async def format_recommendations_with_llm(
         return fallback
 
     payload = {
-        "preference": preference.dict(),
-        "games": [game.dict() for game in ranked_games[: limit or preference.result_count or 5]],
+        "preference": dump_model(preference),
+        "games": [
+            dump_model(game)
+            for game in ranked_games[: limit or preference.result_count or 5]
+        ],
         "rules": [
             "只能基于 games 中已有字段写推荐说明。",
-            "不要编造当前价格、史低、平台支持、中文支持。",
+            "可以基于 games.price_summary 写当前价格、史低和促销信息。",
+            "不要编造缺失的当前价格、史低、平台支持、中文支持。",
             "字段为空时写不确定或省略。",
             "必须包含免责声明。",
         ],
     }
     prompt = (
-        "请用中文生成固定格式游戏推荐结果：一句话结论、免责声明、推荐列表；"
-        "每款游戏包含名称、平台、推荐理由、可能不适合的点、购买/平台建议、数据不确定说明。\n"
+        "请用中文生成固定格式游戏推荐结果："
+        "一句话结论、免责声明、推荐列表；"
+        "每款游戏包含名称、平台、推荐理由、可能不适合的点、"
+        "购买/平台建议、数据不确定说明。\n"
         f"数据 JSON：{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
         response = await context.llm_generate(
             chat_provider_id=resolved_provider,
             prompt=prompt,
-            system_prompt="你只能改写给定 JSON 中的事实，不得补充外部知识或猜测。",
+            system_prompt=(
+                "你只能改写给定 JSON 中的事实，不得补充外部知识或猜测。"
+            ),
         )
         text = str(getattr(response, "completion_text", "") or "").strip()
     except Exception as exc:
@@ -87,7 +106,11 @@ async def format_recommendations_with_llm(
 
 def format_game_block(index: int, game: RankedGame) -> list[str]:
     platforms = "、".join(game.platforms) if game.platforms else "不确定"
-    reasons = "；".join(game.reasons[:4]) if game.reasons else "RAWG 数据与偏好有一定匹配"
+    reasons = (
+        "；".join(game.reasons[:4])
+        if game.reasons
+        else "RAWG 数据与偏好有一定匹配"
+    )
     warnings = "；".join(game.warnings[:4]) if game.warnings else "暂未发现明显不适合点"
     stores = "、".join(game.stores[:4]) if game.stores else "不确定"
     uncertain = uncertain_fields(game)
@@ -96,8 +119,17 @@ def format_game_block(index: int, game: RankedGame) -> list[str]:
         f"   平台：{platforms}",
         f"   推荐理由：{reasons}",
         f"   可能不适合的点：{warnings}",
-        f"   购买 / 平台建议：RAWG 记录的商店为 {stores}；具体价格请以对应商店页面为准。",
     ]
+    if game.price_summary:
+        lines.append(f"   价格：{format_price_summary(game.price_summary)}")
+        links = format_price_links(game.price_summary)
+        if links:
+            lines.append(f"   购买链接：{links}")
+    else:
+        lines.append(
+            f"   购买 / 平台建议：RAWG 记录的商店为 {stores}；"
+            "具体价格请以对应商店页面为准。"
+        )
     if game.raw_url:
         lines.append(f"   数据来源：{game.raw_url}")
     if uncertain:
@@ -105,7 +137,7 @@ def format_game_block(index: int, game: RankedGame) -> list[str]:
     return lines
 
 
-def format_game_detail(game: GameCandidate) -> str:
+def format_game_detail(game: GameCandidate, price_summary: GamePriceSummary | None = None) -> str:
     lines = [
         f"《{game.title}》",
         f"平台：{'、'.join(game.platforms) if game.platforms else '不确定'}",
@@ -114,10 +146,23 @@ def format_game_detail(game: GameCandidate) -> str:
         f"RAWG 评分：{game.rating if game.rating is not None else '不确定'}",
         f"Metacritic：{game.metacritic if game.metacritic is not None else '不确定'}",
         f"发售日：{game.released or '不确定'}",
-        f"平均游玩时长：{str(game.playtime) + ' 小时' if game.playtime is not None else '不确定'}",
+        (
+            "平均游玩时长："
+            f"{str(game.playtime) + ' 小时' if game.playtime is not None else '不确定'}"
+        ),
         f"商店：{'、'.join(game.stores) if game.stores else '不确定'}",
-        "价格 / 中文支持：RAWG 不提供可靠实时地区价格，中文支持也可能缺失，请以商店页面为准。",
     ]
+    if price_summary:
+        lines.append(f"Steam 价格：{format_price_summary(price_summary)}")
+        links = format_price_links(price_summary)
+        if links:
+            lines.append(f"购买链接：{links}")
+        lines.append("中文支持：RAWG 数据可能缺失，请以商店页面为准。")
+    else:
+        lines.append(
+            "价格 / 中文支持：RAWG 不提供可靠实时地区价格，"
+            "中文支持也可能缺失，请以商店页面为准。"
+        )
     if game.raw_url:
         lines.append(f"数据来源：{game.raw_url}")
     return "\n".join(lines)
@@ -127,13 +172,53 @@ def uncertain_fields(game: RankedGame) -> str:
     fields = []
     if not game.stores:
         fields.append("购买渠道")
-    fields.append("实时价格")
+    if not game.price_summary:
+        fields.append("实时价格")
     if not any("中文" in reason or "chinese" in reason.lower() for reason in game.reasons):
         fields.append("中文支持")
     return "、".join(fields)
 
 
-async def resolve_provider_id(context: Context, event: AstrMessageEvent, provider_id: str) -> str:
+def format_price_summary(summary: GamePriceSummary) -> str:
+    parts: list[str] = []
+    if summary.current_price:
+        parts.append(f"Steam 当前价 {summary.current_price}")
+    if summary.lowest_price:
+        lowest = f"史低 {summary.lowest_price}"
+        annotations = []
+        if summary.lowest_date:
+            annotations.append(summary.lowest_date)
+        if summary.lowest_discount:
+            annotations.append(f"-{summary.lowest_discount}%")
+        if annotations:
+            lowest += f"（{'，'.join(annotations)}）"
+        parts.append(lowest)
+    if summary.sale_status:
+        parts.append(summary.sale_status)
+    if summary.region_summary:
+        parts.append(summary.region_summary)
+    return "；".join(parts) if parts else "暂时不可用"
+
+
+def format_price_links(summary: GamePriceSummary) -> str:
+    links = []
+    if summary.store_url:
+        links.append(f"Steam：{summary.store_url}")
+    if summary.heybox_url:
+        links.append(f"小黑盒：{summary.heybox_url}")
+    return "；".join(links)
+
+
+def dump_model(model: Any) -> dict[str, Any]:
+    dumper = getattr(model, "model_dump", None)
+    return dumper() if dumper else model.dict()
+
+
+async def resolve_provider_id(
+    context: "Context",
+    event: "AstrMessageEvent",
+    provider_id: str,
+) -> str:
     if provider_id:
         return provider_id
     getter = getattr(context, "get_current_chat_provider_id", None)
@@ -144,4 +229,3 @@ async def resolve_provider_id(context: Context, event: AstrMessageEvent, provide
     except Exception as exc:
         logger.debug(f"获取当前 LLM provider 失败：{exc}")
         return ""
-
