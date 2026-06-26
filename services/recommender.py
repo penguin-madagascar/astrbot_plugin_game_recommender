@@ -1,13 +1,34 @@
 from __future__ import annotations
 
-from ..clients.rawg import RAWG_GENRE_SLUGS, RAWG_TAG_SLUGS, RawgClient
+from typing import Protocol
+
+from ..clients.rawg import RAWG_GENRE_SLUGS, RAWG_TAG_SLUGS
 from ..storage.models import GameCandidate, GamePreference, RankedGame
 from .ranker import game_has_disliked_term, game_matches_any_platform, score_game
 
+STEAM_FALLBACK_WARNING = (
+    "未配置 RAWG API Key，当前使用 Steam 公开数据源，主要覆盖 Steam/PC；"
+    "Switch/PlayStation/Xbox 覆盖有限。"
+)
+STEAM_SOURCE_PLATFORMS = {"steam", "pc"}
+
+
+class GameSource(Protocol):
+    async def search_games(
+        self,
+        search: str | None = None,
+        platforms: list[str] | None = None,
+        genres: list[str] | None = None,
+        tags: list[str] | None = None,
+        page_size: int = 20,
+        ordering: str = "-rating",
+    ) -> list[GameCandidate]:
+        ...
+
 
 class GameRecommender:
-    def __init__(self, rawg_client: RawgClient, max_results: int = 5) -> None:
-        self.rawg_client = rawg_client
+    def __init__(self, game_source: GameSource, max_results: int = 5) -> None:
+        self.game_source = game_source
         self.max_results = min(max(max_results, 1), 10)
 
     async def recommend(self, preference: GamePreference) -> list[RankedGame]:
@@ -26,7 +47,7 @@ class GameRecommender:
 
         for reference in preference.reference_games_like[:3]:
             candidates.extend(
-                await self.rawg_client.search_games(
+                await self.game_source.search_games(
                     search=reference,
                     platforms=preference.platforms,
                     page_size=page_size,
@@ -40,7 +61,7 @@ class GameRecommender:
             tag_terms.extend(["co-op", "multiplayer"])
         if genre_terms or tag_terms:
             candidates.extend(
-                await self.rawg_client.search_games(
+                await self.game_source.search_games(
                     platforms=preference.platforms,
                     genres=genre_terms[:3],
                     tags=tag_terms[:4],
@@ -52,7 +73,7 @@ class GameRecommender:
         if not candidates:
             query = " ".join(preference.genres_like[:2]) or preference.mood
             candidates.extend(
-                await self.rawg_client.search_games(
+                await self.game_source.search_games(
                     search=query,
                     platforms=preference.platforms,
                     page_size=page_size,
@@ -82,6 +103,19 @@ class GameRecommender:
         return filtered
 
 
+def adapt_preference_for_steam_source(preference: GamePreference) -> None:
+    if STEAM_FALLBACK_WARNING not in preference.parse_warnings:
+        preference.parse_warnings.append(STEAM_FALLBACK_WARNING)
+
+    if not preference.platforms:
+        return
+
+    steam_platforms = [
+        platform for platform in preference.platforms if platform in STEAM_SOURCE_PLATFORMS
+    ]
+    preference.platforms = steam_platforms or ["steam"]
+
+
 def dedupe_candidates(candidates: list[GameCandidate]) -> list[GameCandidate]:
     result: list[GameCandidate] = []
     seen: set[str] = set()
@@ -91,4 +125,3 @@ def dedupe_candidates(candidates: list[GameCandidate]) -> list[GameCandidate]:
             result.append(candidate)
             seen.add(key)
     return result
-

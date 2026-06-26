@@ -56,7 +56,7 @@ class RankerTest(unittest.TestCase):
 
 class FilteringTest(unittest.TestCase):
     def test_filter_excludes_platform_mismatch_and_disliked_tags(self) -> None:
-        recommender = GameRecommender(rawg_client=None, max_results=5)  # type: ignore[arg-type]
+        recommender = GameRecommender(game_source=None, max_results=5)  # type: ignore[arg-type]
         preference = GamePreference(platforms=["steam"], genres_dislike=["horror"])
         games = [
             GameCandidate(title="Switch Only", platforms=["Nintendo Switch"]),
@@ -71,4 +71,3 @@ class FilteringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

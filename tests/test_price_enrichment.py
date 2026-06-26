@@ -66,6 +66,13 @@ class CommandRegistrationTest(unittest.TestCase):
         self.assertIn("gamedesc", commands)
         self.assertIn("游戏详情", commands["gamedesc"])
 
+    def test_rawg_api_key_is_optional_in_config_schema(self) -> None:
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        rawg_config = schema["rawg_api_key"]
+
+        self.assertEqual(rawg_config["default"], "")
+        self.assertNotIn("必填", rawg_config["hint"])
+
 
 class PriceFormattingTest(unittest.TestCase):
     def test_price_summary_is_json_serializable(self) -> None:

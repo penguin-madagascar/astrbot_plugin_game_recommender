@@ -10,20 +10,21 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
 
 from .clients.rawg import RawgApiError, RawgClient, RawgConfigurationError
+from .clients.steam import SteamApiError, SteamClient
 from .services.formatter import (
     format_game_detail,
     format_recommendations_with_llm,
 )
 from .services.preference_parser import PreferenceParser
-from .services.recommender import GameRecommender
+from .services.recommender import GameRecommender, adapt_preference_for_steam_source
 from .services.steam_price_bridge import SteamPriceBridge
 from .storage.repository import SQLiteCacheRepository
 
 PLUGIN_NAME = "astrbot_plugin_game_recommender"
-PLUGIN_VERSION = "0.2.0"
+PLUGIN_VERSION = "0.3.0"
 PLUGIN_DESCRIPTION = (
-    "基于 RAWG 数据、规则排序和可选 Steam 价格增强的"
-    "自然语言游戏推荐插件。"
+    "无需 API Key 可运行，基于 Steam/RAWG 数据、规则排序和"
+    "可选 Steam 价格增强的自然语言游戏推荐插件。"
 )
 
 
@@ -58,8 +59,22 @@ class GameRecommenderPlugin(Star):
             cache=self.cache,
             cache_ttl_hours=safe_int(self.config.get("cache_ttl_hours"), 24),
         )
+        self.steam_client = SteamClient(
+            client=self.http_client,
+            cache=self.cache,
+            cache_ttl_hours=safe_int(self.config.get("cache_ttl_hours"), 24),
+            default_country=str(
+                self.config.get("steam_price_country")
+                or self.config.get("default_region")
+                or "CN"
+            ),
+            language=str(self.config.get("steam_price_language") or "schinese"),
+        )
+        self.game_source = (
+            self.rawg_client if self.rawg_client.is_configured() else self.steam_client
+        )
         self.preference_parser = PreferenceParser(context, self.provider_id)
-        self.recommender = GameRecommender(self.rawg_client, max_results=self.max_results)
+        self.recommender = GameRecommender(self.game_source, max_results=self.max_results)
         self.price_bridge = SteamPriceBridge(self.http_client, self.config)
 
     async def terminate(self) -> None:
@@ -82,6 +97,8 @@ class GameRecommenderPlugin(Star):
 
         try:
             preference = await self.preference_parser.parse_preference(event, text)
+            if not self.rawg_client.is_configured():
+                adapt_preference_for_steam_source(preference)
             ranked_games = await self.recommender.recommend(preference)
             ranked_games = await self.price_bridge.enrich_ranked_games(ranked_games, preference)
             message = await format_recommendations_with_llm(
@@ -99,6 +116,10 @@ class GameRecommenderPlugin(Star):
             logger.warning(f"RAWG game recommendation failed: {exc}")
             yield event.plain_result(f"RAWG 查询失败：{exc}")
             return
+        except SteamApiError as exc:
+            logger.warning(f"Steam game recommendation failed: {exc}")
+            yield event.plain_result(f"Steam 查询失败：{exc}")
+            return
         except Exception as exc:
             logger.exception("Game recommendation failed")
             yield event.plain_result(f"游戏推荐失败：{exc}")
@@ -109,7 +130,7 @@ class GameRecommenderPlugin(Star):
     @filter.command(
         "gamedesc",
         alias={"游戏详情"},
-        desc="查询 RAWG 游戏基础资料和 Steam 价格。",
+        desc="查询游戏基础资料和 Steam 价格。",
     )
     async def game_detail(self, event: AstrMessageEvent, query: GreedyStr):
         title = str(query).strip()
@@ -118,14 +139,14 @@ class GameRecommenderPlugin(Star):
             return
 
         try:
-            candidates = await self.rawg_client.search_games(search=title, page_size=1)
+            candidates = await self.game_source.search_games(search=title, page_size=1)
             if not candidates:
-                yield event.plain_result(f"没有在 RAWG 查询到游戏：{title}")
+                yield event.plain_result(f"没有查询到游戏：{title}")
                 return
             candidate = candidates[0]
             game = (
                 await self.rawg_client.get_game_detail(candidate.rawg_id)
-                if candidate.rawg_id is not None
+                if self.rawg_client.is_configured() and candidate.rawg_id is not None
                 else candidate
             )
             price_summary = await self.price_bridge.lookup(game.title)
@@ -135,6 +156,10 @@ class GameRecommenderPlugin(Star):
         except RawgApiError as exc:
             logger.warning(f"RAWG game detail failed: {exc}")
             yield event.plain_result(f"RAWG 查询失败：{exc}")
+            return
+        except SteamApiError as exc:
+            logger.warning(f"Steam game detail failed: {exc}")
+            yield event.plain_result(f"Steam 查询失败：{exc}")
             return
         except Exception as exc:
             logger.exception("Game detail lookup failed")

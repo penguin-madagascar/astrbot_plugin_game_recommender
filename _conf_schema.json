@@ -1,9 +1,8 @@
 {
   "rawg_api_key": {
     "type": "string",
-    "description": "RAWG API Key。",
-    "hint": "前往 https://rawg.io/apidocs 获取。MVP 必填；留空时 /游戏推荐 和 /游戏详情 会返回配置提示。",
-    "obvious_hint": true,
+    "description": "RAWG API Key（可选）。",
+    "hint": "留空时使用 Steam 公开数据源；填写后增强多平台候选召回和 RAWG 游戏资料。",
     "default": ""
   },
   "igdb_client_id": {
@@ -33,7 +32,7 @@
   "enable_steam_price_enrichment": {
     "type": "bool",
     "description": "是否在安装 steam_price_heybox 插件时增强 Steam 当前价和史低。",
-    "hint": "关闭后 /gamerec 和 /gamedesc 只使用 RAWG 数据。",
+    "hint": "关闭后 /gamerec 和 /gamedesc 只展示游戏资料，不补充 Steam 价格。",
     "default": true
   },
   "steam_price_country": {
@@ -60,7 +59,7 @@
   },
   "cache_ttl_hours": {
     "type": "int",
-    "description": "RAWG 查询缓存有效期（小时）。",
+    "description": "游戏数据查询缓存有效期（小时）。",
     "default": 24
   },
   "llm_provider_id": {

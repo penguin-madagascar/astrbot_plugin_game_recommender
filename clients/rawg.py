@@ -86,6 +86,9 @@ class RawgClient:
         self.cache = cache
         self.cache_ttl_hours = cache_ttl_hours
 
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
     async def search_games(
         self,
         search: str | None = None,
@@ -122,7 +125,7 @@ class RawgClient:
     async def _get_json(self, path: str, params: dict[str, Any]) -> Any:
         if not self.api_key:
             raise RawgConfigurationError(
-                "请先在插件配置中填写 rawg_api_key。MVP 需要 RAWG API Key 才能查询游戏事实数据。"
+                "RAWG 数据源需要 rawg_api_key；未配置时插件会使用 Steam 公开数据源。"
             )
         request_params = dict(params)
         request_params["key"] = self.api_key
@@ -254,4 +257,3 @@ def optional_float(value: Any) -> float | None:
 def optional_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
-
