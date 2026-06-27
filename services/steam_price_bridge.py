@@ -1,48 +1,105 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
+import sys
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable
 
 from ..storage.models import GamePreference, GamePriceSummary, RankedGame
 
 logger = logging.getLogger(__name__)
 
-try:
-    from astrbot_plugin_steam_price_heybox.models import (
-        PriceHistory,
-        RegionPrice,
-        SteamGameDetails,
-    )
-    from astrbot_plugin_steam_price_heybox.steam_price import (
-        PriceLookupError,
-        SteamPriceService,
-        format_region_summary,
-        format_sale_status,
-        money_text,
-        parse_country,
-    )
-except Exception as exc:  # pragma: no cover - depends on optional sibling plugin.
-    PriceHistory = None  # type: ignore[assignment]
-    PriceLookupError = RuntimeError  # type: ignore[assignment]
-    RegionPrice = None  # type: ignore[assignment]
-    SteamGameDetails = None  # type: ignore[assignment]
-    SteamPriceService = None  # type: ignore[assignment]
-    format_region_summary = None  # type: ignore[assignment]
-    format_sale_status = None  # type: ignore[assignment]
-    money_text = None  # type: ignore[assignment]
-    parse_country = None  # type: ignore[assignment]
-    PRICE_PLUGIN_IMPORT_ERROR: Exception | None = exc
-else:
-    PRICE_PLUGIN_IMPORT_ERROR = None
-
 ServiceFactory = Callable[[dict[str, Any], Any], Any]
-DEFAULT_PRICE_LOOKUP_LIMIT = 5
+DEFAULT_PRICE_LOOKUP_LIMIT = 10
 DEFAULT_HISTORY_DAYS = 720
 DEFAULT_GLOBAL_PRICE_LIMIT = 10
 DEFAULT_LANGUAGE = "schinese"
+PRICE_PLUGIN_PACKAGE = "astrbot_plugin_steam_price_heybox"
+PRICE_PLUGIN_IMPORT_ERROR: Exception | None = None
+_PRICE_PLUGIN_SYMBOLS: "PricePluginSymbols | None" = None
+
+
+@dataclass(frozen=True)
+class PricePluginSymbols:
+    history_class: type
+    region_class: type
+    details_class: type
+    lookup_error_class: type[Exception]
+    service_class: type
+    format_region_summary: Callable[[list[Any]], str]
+    format_sale_status: Callable[[Any, Any], list[str]]
+    money_text: Callable[[Decimal, str], str]
+    parse_country: Callable[[str], str]
+
+
+def load_price_plugin_symbols(
+    search_roots: list[Path] | None = None,
+) -> PricePluginSymbols:
+    roots = list(search_roots or sibling_plugin_search_roots())
+    errors: list[Exception] = []
+    for root in [None, *roots]:
+        try:
+            return import_price_plugin_symbols(root)
+        except Exception as exc:
+            errors.append(exc)
+    raise errors[-1] if errors else ModuleNotFoundError(PRICE_PLUGIN_PACKAGE)
+
+
+def import_price_plugin_symbols(search_root: Path | None) -> PricePluginSymbols:
+    inserted = False
+    if search_root is not None:
+        root_text = str(search_root)
+        if root_text not in sys.path:
+            sys.path.insert(0, root_text)
+            inserted = True
+    try:
+        models = importlib.import_module(f"{PRICE_PLUGIN_PACKAGE}.models")
+        steam_price = importlib.import_module(f"{PRICE_PLUGIN_PACKAGE}.steam_price")
+        return PricePluginSymbols(
+            history_class=models.PriceHistory,
+            region_class=models.RegionPrice,
+            details_class=models.SteamGameDetails,
+            lookup_error_class=steam_price.PriceLookupError,
+            service_class=steam_price.SteamPriceService,
+            format_region_summary=steam_price.format_region_summary,
+            format_sale_status=steam_price.format_sale_status,
+            money_text=steam_price.money_text,
+            parse_country=steam_price.parse_country,
+        )
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(str(search_root))
+            except ValueError:
+                pass
+
+
+def sibling_plugin_search_roots() -> list[Path]:
+    current_plugin = Path(__file__).resolve().parents[1]
+    roots = [current_plugin.parent]
+    return [
+        root
+        for root in roots
+        if (root / PRICE_PLUGIN_PACKAGE).is_dir()
+    ]
+
+
+def get_price_plugin_symbols() -> PricePluginSymbols | None:
+    global PRICE_PLUGIN_IMPORT_ERROR, _PRICE_PLUGIN_SYMBOLS
+    if _PRICE_PLUGIN_SYMBOLS is not None:
+        return _PRICE_PLUGIN_SYMBOLS
+    try:
+        _PRICE_PLUGIN_SYMBOLS = load_price_plugin_symbols()
+    except Exception as exc:  # pragma: no cover - depends on optional sibling plugin.
+        PRICE_PLUGIN_IMPORT_ERROR = exc
+        return None
+    PRICE_PLUGIN_IMPORT_ERROR = None
+    return _PRICE_PLUGIN_SYMBOLS
 
 
 class SteamPriceBridge:
@@ -89,7 +146,7 @@ class SteamPriceBridge:
 
         enriched: list[RankedGame] = []
         for index, game in enumerate(games):
-            if index >= self.lookup_limit:
+            if index >= self.lookup_limit or not has_steam_purchase_signal(game):
                 enriched.append(game)
                 continue
             summary = await self.lookup(game.title)
@@ -101,6 +158,9 @@ class SteamPriceBridge:
     async def lookup(self, title: str, country: str | None = None) -> GamePriceSummary | None:
         if not self.is_available() or not title.strip():
             return None
+
+        symbols = get_price_plugin_symbols()
+        lookup_error = symbols.lookup_error_class if symbols else RuntimeError
 
         try:
             resolved_country = normalize_country(country or self.default_country)
@@ -115,7 +175,7 @@ class SteamPriceBridge:
                 self.service.heybox_client.global_prices(identity.appid),
                 return_exceptions=True,
             )
-        except PriceLookupError as exc:
+        except lookup_error as exc:
             logger.debug("Steam price lookup skipped for %s: %s", title, exc)
             return None
         except Exception as exc:
@@ -132,9 +192,10 @@ class SteamPriceBridge:
 
 
 def default_service_factory() -> ServiceFactory | None:
-    if SteamPriceService is None:
+    symbols = get_price_plugin_symbols()
+    if symbols is None:
         return None
-    return SteamPriceService.from_config
+    return symbols.service_class.from_config
 
 
 def build_price_summary(
@@ -146,10 +207,13 @@ def build_price_summary(
 ) -> GamePriceSummary:
     current_price, current_cny = current_price_fields(details, history, regions, country)
     lowest_price, lowest_cny, lowest_date, lowest_discount = lowest_price_fields(history)
+    symbols = get_price_plugin_symbols()
     sale_status = (
-        "；".join(format_sale_status(history, service_today(history))) if history else None
+        "；".join(symbols.format_sale_status(history, service_today(history)))
+        if history and symbols
+        else None
     )
-    region_summary = format_region_summary(regions) if regions and format_region_summary else None
+    region_summary = symbols.format_region_summary(regions) if regions and symbols else None
     return GamePriceSummary(
         source="steam_price_heybox",
         appid=appid,
@@ -183,11 +247,11 @@ def current_price_fields(
         return "尚未发售", None
     if details and getattr(details, "price", None):
         price = details.price
-        text = money_text(price.current, price.currency) if money_text else str(price.current)
+        text = money_text_value(price.current, price.currency)
         return text, cny_value(price.current, price.currency) or region_cny(regions, country)
     if history and getattr(history, "current", None):
         current = history.current
-        text = money_text(current.price, current.currency) if money_text else str(current.price)
+        text = money_text_value(current.price, current.currency)
         return text, (
             decimal_to_float(current.rmb_price)
             or cny_value(current.price, current.currency)
@@ -200,11 +264,7 @@ def lowest_price_fields(
 ) -> tuple[str | None, float | None, str | None, int | None]:
     if not history or history.lowest_price is None:
         return None, None, None, None
-    text = (
-        money_text(history.lowest_price, history.lowest_currency)
-        if money_text
-        else str(history.lowest_price)
-    )
+    text = money_text_value(history.lowest_price, history.lowest_currency)
     lowest_cny = cny_value(history.lowest_price, history.lowest_currency)
     if lowest_cny is None:
         lowest_cny = lowest_history_rmb(history)
@@ -218,6 +278,8 @@ def attach_price_summary(
     preference: GamePreference,
 ) -> RankedGame:
     if summary is None:
+        if preference.budget is not None and has_steam_purchase_signal(game):
+            return attach_missing_price_warning(game)
         return game
 
     data = dump_model(game)
@@ -274,24 +336,48 @@ def attach_price_summary(
 
 
 def normalize_country(value: str) -> str:
-    if parse_country:
-        return parse_country(value) or "CN"
+    symbols = get_price_plugin_symbols()
+    if symbols:
+        return symbols.parse_country(value) or "CN"
     text = value.strip()
     return text.upper() if len(text) == 2 and text.isalpha() else "CN"
 
 
 def is_steam_details(value: Any) -> bool:
-    return SteamGameDetails is not None and isinstance(value, SteamGameDetails)
+    symbols = get_price_plugin_symbols()
+    return symbols is not None and isinstance(value, symbols.details_class)
 
 
 def is_price_history(value: Any) -> bool:
-    return PriceHistory is not None and isinstance(value, PriceHistory)
+    symbols = get_price_plugin_symbols()
+    return symbols is not None and isinstance(value, symbols.history_class)
 
 
 def is_region_prices(value: Any) -> bool:
+    symbols = get_price_plugin_symbols()
     return isinstance(value, list) and (
-        not value or RegionPrice is None or all(isinstance(item, RegionPrice) for item in value)
+        not value
+        or symbols is None
+        or all(isinstance(item, symbols.region_class) for item in value)
     )
+
+
+def money_text_value(value: Decimal, currency: str) -> str:
+    symbols = get_price_plugin_symbols()
+    return symbols.money_text(value, currency) if symbols else str(value)
+
+
+def has_steam_purchase_signal(game: RankedGame) -> bool:
+    haystack = " | ".join([*game.platforms, *game.stores]).lower()
+    return any(term in haystack for term in ("steam", "pc", "windows"))
+
+
+def attach_missing_price_warning(game: RankedGame) -> RankedGame:
+    data = dump_model(game)
+    warnings = list(game.warnings)
+    append_unique(warnings, "Steam 价格未获取到，预算匹配无法确认")
+    data["warnings"] = warnings
+    return validate_ranked_game(data)
 
 
 def cny_value(value: Decimal, currency: str) -> float | None:

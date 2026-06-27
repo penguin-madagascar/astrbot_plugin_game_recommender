@@ -104,7 +104,15 @@ class GameRecommenderPlugin(Star):
             preference = await self.preference_parser.parse_preference(event, text)
             if not self.rawg_client.is_configured():
                 adapt_preference_for_steam_source(preference)
-            ranked_games = await self.recommender.recommend(preference)
+            candidate_pool_size = (
+                max(self.max_results * 3, preference.result_count or self.max_results)
+                if preference.budget is not None or self.price_bridge.is_available()
+                else None
+            )
+            ranked_games = await self.recommender.recommend(
+                preference,
+                candidate_pool_size=candidate_pool_size,
+            )
             ranked_games = await self.price_bridge.enrich_ranked_games(ranked_games, preference)
             message = await format_recommendations_with_llm(
                 self.context,

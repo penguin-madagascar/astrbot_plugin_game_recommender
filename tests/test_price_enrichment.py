@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT.parent))
 from astrbot_plugin_game_recommender.services.steam_price_bridge import (  # noqa: E402
     SteamPriceBridge,
     attach_price_summary,
+    load_price_plugin_symbols,
 )
 from astrbot_plugin_game_recommender.storage.models import (  # noqa: E402
     GameCandidate,
@@ -134,6 +136,20 @@ class PriceFormattingTest(unittest.TestCase):
         self.assertIn("Steam：https://store.steampowered.com/app/123/", text)
         self.assertIn("小黑盒：https://www.xiaoheihe.cn/app/topic/game/pc/123", text)
 
+    def test_recommendation_reasons_keep_rating_slash(self) -> None:
+        game = RankedGame(
+            title="Rated Game",
+            platforms=["PC"],
+            stores=["Steam"],
+            score=10,
+            reasons=["RAWG 评分 4.8/5", "Metacritic 92"],
+        )
+
+        text = "\n".join(format_game_block(1, game))
+
+        self.assertIn("RAWG 评分 4.8/5", text)
+        self.assertNotIn("RAWG 评分 4.8；5", text)
+
     def test_game_detail_appends_price_summary_when_available(self) -> None:
         game = GameCandidate(title="Test Game", platforms=["PC"], stores=["Steam"])
 
@@ -169,7 +185,7 @@ class PriceBridgeTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(bridge.is_available())
-        self.assertEqual(bridge.lookup_limit, 5)
+        self.assertEqual(bridge.lookup_limit, 10)
         self.assertEqual(captured_config["default_country"], "US")
         self.assertEqual(captured_config["default_history_country"], "US")
         self.assertEqual(captured_config["default_language"], "schinese")
@@ -197,6 +213,64 @@ class PriceBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary.lowest_cny, 50)
         self.assertIn("当前促销", summary.sale_status or "")
         self.assertIn("乌克兰 / UA", summary.region_summary or "")
+
+    async def test_price_plugin_can_load_from_sibling_plugin_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plugin_dir = root / "astrbot_plugin_steam_price_heybox"
+            plugin_dir.mkdir()
+            (plugin_dir / "__init__.py").write_text("", encoding="utf-8")
+            (plugin_dir / "models.py").write_text(
+                "\n".join(
+                    [
+                        "class PriceHistory: pass",
+                        "class RegionPrice: pass",
+                        "class SteamGameDetails: pass",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (plugin_dir / "steam_price.py").write_text(
+                "\n".join(
+                    [
+                        "class PriceLookupError(RuntimeError): pass",
+                        "class SteamPriceService:",
+                        "    marker = 'fake-sibling-plugin'",
+                        "    @classmethod",
+                        "    def from_config(cls, config, client):",
+                        "        return cls()",
+                        "def format_region_summary(regions): return ''",
+                        "def format_sale_status(history, today): return []",
+                        "def money_text(value, currency): return str(value)",
+                        "def parse_country(value): return value.upper() if value else ''",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            removed = {
+                name: sys.modules.pop(name)
+                for name in list(sys.modules)
+                if name == "astrbot_plugin_steam_price_heybox"
+                or name.startswith("astrbot_plugin_steam_price_heybox.")
+            }
+            parent_path = str(ROOT.parent)
+            removed_paths = [path for path in sys.path if path == parent_path]
+            sys.path[:] = [path for path in sys.path if path != parent_path]
+            try:
+                symbols = load_price_plugin_symbols(search_roots=[root])
+            finally:
+                for name in list(sys.modules):
+                    if name == "astrbot_plugin_steam_price_heybox" or name.startswith(
+                        "astrbot_plugin_steam_price_heybox."
+                    ):
+                        sys.modules.pop(name, None)
+                sys.modules.update(removed)
+                sys.path[:0] = removed_paths
+
+        self.assertIsNotNone(symbols.service_class)
+        self.assertEqual(symbols.service_class.marker, "fake-sibling-plugin")
+        self.assertEqual(symbols.parse_country("cn"), "CN")
 
 
 class BudgetScoringTest(unittest.TestCase):

@@ -32,6 +32,7 @@ MULTIPLAYER_TERMS = (
     "多人",
     "合作",
 )
+SINGLEPLAYER_TERMS = ("singleplayer", "single player", "单人")
 CHINESE_TERMS = ("chinese", "simplified chinese", "traditional chinese", "中文", "简体中文")
 DIFFICULT_TERMS = ("souls-like", "soulslike", "difficult", "hard", "permadeath", "roguelike")
 EASY_TERMS = ("casual", "relaxing", "family friendly", "cute", "party", "cozy")
@@ -45,10 +46,10 @@ def score_game(game: GameCandidate, preference: GamePreference) -> tuple[float, 
     matched_platforms = matched_requested_platforms(game, preference.platforms)
     if preference.platforms:
         if len(matched_platforms) == len(preference.platforms):
-            score += 30
+            score += 38
             reasons.append(f"覆盖你指定的平台：{', '.join(matched_platforms)}")
         elif matched_platforms:
-            score += 15
+            score += 8
             reasons.append(f"至少匹配平台：{', '.join(matched_platforms)}")
             missing = [item for item in preference.platforms if item not in matched_platforms]
             warnings.append(f"未确认支持这些平台：{', '.join(missing)}")
@@ -70,24 +71,24 @@ def score_game(game: GameCandidate, preference: GamePreference) -> tuple[float, 
 
     reference_warnings = reference_game_warnings(game, preference)
     warnings.extend(reference_warnings)
-    if preference.reference_games_like and not reference_warnings:
-        score += 6
-        reasons.append("由参考游戏召回，具体相似度以 RAWG 标签和评分辅助判断")
 
     if game.rating is not None:
-        score += min(max(game.rating, 0), 5) * 5
+        score += min(max(game.rating, 0), 5) * 3
         reasons.append(f"RAWG 评分 {game.rating:.1f}/5")
     if game.metacritic is not None:
-        score += min(max(game.metacritic, 0), 100) / 10
+        score += min(max(game.metacritic, 0), 100) / 15
         reasons.append(f"Metacritic {game.metacritic}")
 
     if preference.players and preference.players >= 2:
         if has_multiplayer_signal(game):
-            score += 18
+            score += 25
             reasons.append("标签显示支持多人/合作")
         else:
-            score -= 12
+            score -= 45
             warnings.append("RAWG 数据中没有明确多人/合作标签")
+        if has_singleplayer_only_signal(game):
+            score -= 35
+            warnings.append("标签显示主要是单人体验")
 
     if preference.language and ("中文" in preference.language or "chinese" in preference.language):
         if match_any(game_haystack(game), CHINESE_TERMS):
@@ -187,6 +188,11 @@ def has_multiplayer_signal(game: GameCandidate) -> bool:
     return match_any(game_haystack(game), MULTIPLAYER_TERMS)
 
 
+def has_singleplayer_only_signal(game: GameCandidate) -> bool:
+    haystack = game_haystack(game)
+    return match_any(haystack, SINGLEPLAYER_TERMS) and not has_multiplayer_signal(game)
+
+
 def game_haystack(game: GameCandidate, include_stores: bool = False) -> str:
     values = [game.title, *game.platforms, *game.genres, *game.tags]
     if include_stores:
@@ -207,4 +213,3 @@ def dedupe(values: list[str]) -> list[str]:
             result.append(value)
             seen.add(key)
     return result
-

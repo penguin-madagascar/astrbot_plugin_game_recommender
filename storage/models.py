@@ -31,6 +31,32 @@ def split_text_list(value: Any) -> list[str]:
     return normalized
 
 
+def split_display_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = re.split(r"[,，;；\n]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                parts.extend(re.split(r"[,，;；\n]+", item))
+            elif item is not None:
+                parts.append(str(item))
+    else:
+        parts = [str(value)]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        text = re.sub(r"\s+", " ", str(part)).strip()
+        key = text.lower()
+        if text and key not in seen:
+            normalized.append(text)
+            seen.add(key)
+    return normalized
+
+
 def normalize_platform(value: str) -> str:
     text = value.strip().lower()
     if not text:
@@ -130,9 +156,13 @@ class GameCandidate(BaseModel):
     rawg_id: int | None = None
     description: str | None = None
 
-    @validator("platforms", "genres", "tags", "stores", "reasons", "warnings", pre=True)
+    @validator("platforms", "genres", "tags", "stores", pre=True)
     def _normalize_lists(cls, value: Any) -> list[str]:
         return split_text_list(value)
+
+    @validator("reasons", "warnings", pre=True)
+    def _normalize_display_lists(cls, value: Any) -> list[str]:
+        return split_display_list(value)
 
     @validator("title", pre=True)
     def _normalize_title(cls, value: Any) -> str:
