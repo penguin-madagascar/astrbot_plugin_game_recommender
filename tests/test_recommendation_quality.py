@@ -11,6 +11,82 @@ from astrbot_plugin_game_recommender.storage.models import GameCandidate, GamePr
 
 
 class RecommendationQualityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reference_profile_seed_recall_prioritizes_similar_coop_games(self) -> None:
+        source = SearchAwareFakeGameSource(
+            generic_games=[
+                GameCandidate(
+                    title="The Witcher 3 Wild Hunt - Complete Edition",
+                    platforms=["PC", "Nintendo Switch"],
+                    genres=["RPG"],
+                    tags=["Fantasy", "Singleplayer"],
+                    rating=4.8,
+                    stores=["Steam", "Nintendo Store"],
+                ),
+                GameCandidate(
+                    title="Baldur's Gate III",
+                    platforms=["PC", "PlayStation 5"],
+                    genres=["RPG"],
+                    tags=["Choices Matter", "Turn-Based"],
+                    rating=4.4,
+                    stores=["Steam"],
+                ),
+                GameCandidate(
+                    title="Batman: Arkham City - Game of the Year Edition",
+                    platforms=["PC"],
+                    genres=["Action"],
+                    tags=["Singleplayer"],
+                    rating=4.4,
+                    stores=["Steam"],
+                ),
+            ],
+            search_games={
+                "Split Fiction": [
+                    co_op_game(
+                        "Split Fiction",
+                        rating=4.7,
+                        platforms=["PC", "Nintendo Switch 2"],
+                        tags=[
+                            "Co-op",
+                            "Online Co-Op",
+                            "Local Co-op",
+                            "Split Screen",
+                            "Puzzle",
+                            "Adventure",
+                            "Simplified Chinese",
+                        ],
+                    )
+                ],
+                "Unravel Two": [co_op_game("Unravel Two", rating=4.2)],
+                "Overcooked! All You Can Eat": [
+                    co_op_game("Overcooked! All You Can Eat", rating=4.1, tags=["Co-op", "Party"])
+                ],
+            },
+        )
+        preference = GamePreference(
+            platforms=["nintendo switch", "steam"],
+            genres_dislike=["horror"],
+            reference_games_like=["双人成行"],
+            players=2,
+            language="中文",
+            difficulty="easy",
+            result_count=5,
+        )
+
+        ranked = await GameRecommender(source, max_results=5).recommend(
+            preference,
+            candidate_pool_size=10,
+        )
+
+        titles = [game.title for game in ranked[:5]]
+        self.assertIn("Split Fiction", titles[:3])
+        self.assertIn("Unravel Two", titles)
+        self.assertNotIn("The Witcher 3 Wild Hunt - Complete Edition", titles)
+        self.assertNotIn("Baldur's Gate III", titles)
+        self.assertNotIn("Batman: Arkham City - Game of the Year Edition", titles)
+        split_fiction = next(game for game in ranked if game.title == "Split Fiction")
+        self.assertTrue(any("Switch 2" in warning for warning in split_fiction.warnings))
+        self.assertTrue(any(call.get("search") == "Split Fiction" for call in source.calls))
+
     async def test_it_takes_two_like_request_filters_bad_matches(self) -> None:
         source = FakeGameSource(
             [
@@ -138,10 +214,11 @@ def co_op_game(
     title: str,
     rating: float = 4.0,
     tags: list[str] | None = None,
+    platforms: list[str] | None = None,
 ) -> GameCandidate:
     return GameCandidate(
         title=title,
-        platforms=["PC", "Nintendo Switch"],
+        platforms=platforms or ["PC", "Nintendo Switch"],
         genres=["Adventure", "Puzzle"],
         tags=tags or ["Co-op", "Local Co-op", "Puzzle", "Casual", "Simplified Chinese"],
         rating=rating,
@@ -157,6 +234,24 @@ class FakeGameSource:
     async def search_games(self, **kwargs: Any) -> list[GameCandidate]:
         self.calls.append(kwargs)
         return self.games
+
+
+class SearchAwareFakeGameSource:
+    def __init__(
+        self,
+        generic_games: list[GameCandidate],
+        search_games: dict[str, list[GameCandidate]],
+    ) -> None:
+        self.generic_games = generic_games
+        self.search_games_by_query = search_games
+        self.calls: list[dict[str, Any]] = []
+
+    async def search_games(self, **kwargs: Any) -> list[GameCandidate]:
+        self.calls.append(kwargs)
+        query = kwargs.get("search")
+        if query in self.search_games_by_query:
+            return self.search_games_by_query[query]
+        return self.generic_games
 
 
 if __name__ == "__main__":

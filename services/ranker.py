@@ -27,8 +27,10 @@ MULTIPLAYER_TERMS = (
     "cooperative",
     "multiplayer",
     "local co-op",
+    "online co-op",
     "split screen",
     "shared/split screen",
+    "shared/split screen co-op",
     "多人",
     "合作",
 )
@@ -40,8 +42,8 @@ EASY_TERMS = ("casual", "relaxing", "family friendly", "cute", "party", "cozy")
 
 def score_game(game: GameCandidate, preference: GamePreference) -> tuple[float, list[str], list[str]]:
     score = 0.0
-    reasons: list[str] = []
-    warnings: list[str] = []
+    reasons: list[str] = list(game.source_reasons)
+    warnings: list[str] = list(game.source_warnings)
 
     matched_platforms = matched_requested_platforms(game, preference.platforms)
     if preference.platforms:
@@ -58,6 +60,7 @@ def score_game(game: GameCandidate, preference: GamePreference) -> tuple[float, 
             warnings.append("未匹配到指定平台")
     else:
         score += 5
+    warnings.extend(platform_family_warnings(game, preference.platforms))
 
     like_hits = match_terms(game, preference.genres_like)
     if like_hits:
@@ -82,7 +85,8 @@ def score_game(game: GameCandidate, preference: GamePreference) -> tuple[float, 
     if preference.players and preference.players >= 2:
         if has_multiplayer_signal(game):
             score += 25
-            reasons.append("标签显示支持多人/合作")
+            coop_detail = cooperative_play_detail(game)
+            reasons.append(coop_detail or "标签显示支持多人/合作")
         else:
             score -= 45
             warnings.append("RAWG 数据中没有明确多人/合作标签")
@@ -149,6 +153,21 @@ def game_matches_platform(game: GameCandidate, requested: str) -> bool:
     return match_any(haystack, aliases)
 
 
+def platform_family_warnings(game: GameCandidate, requested: list[str]) -> list[str]:
+    warnings: list[str] = []
+    if "nintendo switch" not in requested:
+        return warnings
+    platforms = [platform.lower() for platform in game.platforms]
+    has_switch_2 = any("switch 2" in platform for platform in platforms)
+    has_switch_1 = any(
+        platform in {"nintendo switch", "switch"} or platform.endswith(" nintendo switch")
+        for platform in platforms
+    )
+    if has_switch_2 and not has_switch_1:
+        warnings.append("Nintendo 侧为 Switch 2，不是原版 Switch；请按设备确认版本")
+    return warnings
+
+
 def game_has_disliked_term(game: GameCandidate, disliked: list[str]) -> bool:
     return bool(match_disliked_terms(game, disliked))
 
@@ -191,6 +210,17 @@ def has_multiplayer_signal(game: GameCandidate) -> bool:
 def has_singleplayer_only_signal(game: GameCandidate) -> bool:
     haystack = game_haystack(game)
     return match_any(haystack, SINGLEPLAYER_TERMS) and not has_multiplayer_signal(game)
+
+
+def cooperative_play_detail(game: GameCandidate) -> str:
+    haystack = game_haystack(game)
+    if match_any(haystack, ("local co-op", "split screen", "shared/split screen")):
+        return "支持本地/同屏合作，适合双人一起玩"
+    if match_any(haystack, ("online co-op", "co-op", "coop", "cooperative")):
+        return "标签显示支持双人/多人合作"
+    if match_any(haystack, ("multiplayer", "多人")):
+        return "标签显示支持多人游玩"
+    return ""
 
 
 def game_haystack(game: GameCandidate, include_stores: bool = False) -> str:

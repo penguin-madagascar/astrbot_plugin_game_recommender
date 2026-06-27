@@ -8,7 +8,15 @@ from .ranker import (
     game_has_disliked_term,
     game_matches_any_platform,
     has_singleplayer_only_signal,
+    has_multiplayer_signal,
     score_game,
+)
+from .reference_data import ReferenceProfile
+from .reference_resolver import (
+    ReferenceGameResolver,
+    normalize_reference_title,
+    reference_profile_for,
+    title_similarity,
 )
 
 STEAM_FALLBACK_WARNING = (
@@ -41,6 +49,7 @@ class GameRecommender:
         preference: GamePreference,
         candidate_pool_size: int | None = None,
     ) -> list[RankedGame]:
+        await self._enrich_reference_preferences(preference)
         candidates = await self._recall_candidates(preference)
         filtered = self._filter_candidates(candidates, preference)
         ranked: list[RankedGame] = []
@@ -51,9 +60,31 @@ class GameRecommender:
         limit = candidate_pool_size or preference.result_count or self.max_results
         return ranked[: min(max(limit, 1), 30)]
 
+    async def _enrich_reference_preferences(self, preference: GamePreference) -> None:
+        resolved = await ReferenceGameResolver(self.game_source).resolve_reference_games(
+            "",
+            preference,
+        )
+        preference.resolved_reference_games = resolved
+        for entity in resolved:
+            append_unique(preference.reference_games_like, entity.canonical_title)
+            profile = reference_profile_for(entity)
+            if profile:
+                for term in profile.genres_like:
+                    append_unique(preference.genres_like, term)
+                for term in profile.excluded_tags:
+                    append_unique(preference.genres_dislike, term)
+                continue
+            if entity.confidence >= 0.70:
+                for term in [*entity.genres[:4], *entity.tags[:6]]:
+                    if term not in {"singleplayer", "single player"}:
+                        append_unique(preference.genres_like, term)
+
     async def _recall_candidates(self, preference: GamePreference) -> list[GameCandidate]:
         candidates: list[GameCandidate] = []
         page_size = max(self.max_results * 4, 20)
+
+        candidates.extend(await self._recall_reference_seed_candidates(preference))
 
         genre_terms = [term for term in preference.genres_like if term in RAWG_GENRE_SLUGS]
         tag_terms = [term for term in preference.genres_like if term in RAWG_TAG_SLUGS]
@@ -83,6 +114,28 @@ class GameRecommender:
 
         return dedupe_candidates(candidates)
 
+    async def _recall_reference_seed_candidates(
+        self,
+        preference: GamePreference,
+    ) -> list[GameCandidate]:
+        candidates: list[GameCandidate] = []
+        for entity in preference.resolved_reference_games:
+            if entity.confidence < 0.70:
+                continue
+            profile = reference_profile_for(entity)
+            if not profile:
+                continue
+            for seed in profile.seed_titles:
+                results = await self.game_source.search_games(
+                    search=seed,
+                    page_size=5,
+                    ordering="-relevance",
+                )
+                candidates.extend(
+                    annotate_seed_candidates(results, seed, profile, entity.canonical_title)
+                )
+        return candidates
+
     def _filter_candidates(
         self,
         candidates: list[GameCandidate],
@@ -99,6 +152,13 @@ class GameRecommender:
             if not game_matches_any_platform(candidate, preference.platforms):
                 continue
             if game_has_disliked_term(candidate, preference.genres_dislike):
+                continue
+            if (
+                preference.players
+                and preference.players >= 2
+                and not has_multiplayer_signal(candidate)
+                and not has_reference_seed_signal(candidate)
+            ):
                 continue
             if (
                 preference.players
@@ -164,7 +224,14 @@ def is_downloadable_content(candidate: GameCandidate) -> bool:
     ).lower()
     if any(
         term in haystack
-        for term in (" dlc", "expansion", "expansion pack", "downloadable content")
+        for term in (
+            " dlc",
+            "expansion",
+            "expansion pack",
+            "downloadable content",
+            "friend's pass",
+            "friends pass",
+        )
     ):
         return True
     title = candidate.title.lower()
@@ -176,6 +243,8 @@ def is_downloadable_content(candidate: GameCandidate) -> bool:
             "episode ",
             "season pass",
             "soundtrack",
+            "friend's pass",
+            "friends pass",
         )
     )
 
@@ -185,3 +254,50 @@ def normalized_title_key(title: str) -> str:
     lowered = lowered.replace("game of the year", "").replace("complete edition", "")
     lowered = lowered.replace("definitive edition", "").replace("special edition", "")
     return "".join(ch for ch in lowered if ch.isalnum())
+
+
+def annotate_seed_candidates(
+    candidates: list[GameCandidate],
+    seed_title: str,
+    profile: ReferenceProfile,
+    reference_title: str,
+) -> list[GameCandidate]:
+    result: list[GameCandidate] = []
+    seed_key = normalize_reference_title(seed_title)
+    for candidate in candidates:
+        if title_similarity(seed_title, candidate.title) < 0.70:
+            continue
+        data = dump_candidate(candidate)
+        reasons = list(data.get("source_reasons") or [])
+        warnings = list(data.get("source_warnings") or [])
+        seed_notes = profile.seed_notes.get(seed_key) or (
+            f"参考画像种子：与 {reference_title} 的核心玩法接近",
+        )
+        seed_warnings = profile.seed_warnings.get(seed_key) or ()
+        for note in seed_notes:
+            append_unique(reasons, note)
+        for warning in seed_warnings:
+            append_unique(warnings, warning)
+        data["source_reasons"] = reasons
+        data["source_warnings"] = warnings
+        result.append(validate_candidate(data))
+    return result
+
+
+def has_reference_seed_signal(candidate: GameCandidate) -> bool:
+    return any("参考画像种子" in reason for reason in candidate.source_reasons)
+
+
+def append_unique(values: list[str], text: str) -> None:
+    if text and text not in values:
+        values.append(text)
+
+
+def dump_candidate(candidate: GameCandidate) -> dict:
+    dumper = getattr(candidate, "model_dump", None)
+    return dumper() if dumper else candidate.dict()
+
+
+def validate_candidate(data: dict) -> GameCandidate:
+    validator = getattr(GameCandidate, "model_validate", None)
+    return validator(data) if validator else GameCandidate.parse_obj(data)

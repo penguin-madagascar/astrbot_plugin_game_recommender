@@ -26,6 +26,7 @@ from astrbot_plugin_game_recommender.storage.models import (  # noqa: E402
 from astrbot_plugin_game_recommender.services.formatter import (  # noqa: E402
     format_game_block,
     format_game_detail,
+    format_recommendation_messages,
 )
 from astrbot_plugin_steam_price_heybox.models import (  # noqa: E402
     GameIdentity,
@@ -149,6 +150,52 @@ class PriceFormattingTest(unittest.TestCase):
 
         self.assertIn("RAWG 评分 4.8/5", text)
         self.assertNotIn("RAWG 评分 4.8；5", text)
+
+    def test_recommendations_can_be_split_into_intro_and_game_messages(self) -> None:
+        games = [
+            RankedGame(
+                title="Split Fiction",
+                platforms=["PC", "Nintendo Switch 2"],
+                stores=["Steam"],
+                score=20,
+                reasons=["双人合作核心玩法"],
+                warnings=["Nintendo 侧为 Switch 2，不是原版 Switch"],
+            ),
+            RankedGame(
+                title="Unravel Two",
+                platforms=["PC", "Nintendo Switch"],
+                stores=["Steam", "Nintendo Store"],
+                score=19,
+                reasons=["同屏合作解谜平台玩法"],
+                warnings=["Steam 价格未获取到"],
+            ),
+        ]
+
+        messages = format_recommendation_messages(
+            GamePreference(result_count=2, budget=100),
+            games,
+            limit=2,
+        )
+
+        self.assertEqual(len(messages), 3)
+        self.assertIn("一句话结论", messages[0])
+        self.assertNotIn("1. 《Split Fiction》", messages[0])
+        self.assertTrue(messages[1].startswith("1. 《Split Fiction》"))
+        self.assertTrue(messages[2].startswith("2. 《Unravel Two》"))
+
+    def test_empty_warnings_do_not_emit_vague_no_issue_placeholder(self) -> None:
+        game = RankedGame(
+            title="Test Game",
+            platforms=["PC"],
+            stores=["Steam"],
+            score=10,
+            reasons=["双人合作核心玩法"],
+        )
+
+        text = "\n".join(format_game_block(1, game))
+
+        self.assertNotIn("暂未发现明显不适合点", text)
+        self.assertIn("仍需以商店页面确认", text)
 
     def test_game_detail_appends_price_summary_when_available(self) -> None:
         game = GameCandidate(title="Test Game", platforms=["PC"], stores=["Steam"])

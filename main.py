@@ -13,7 +13,7 @@ from .clients.rawg import RawgApiError, RawgClient, RawgConfigurationError
 from .clients.steam import SteamApiError, SteamClient
 from .services.formatter import (
     format_game_detail,
-    format_recommendations_with_llm,
+    format_recommendation_messages_with_llm,
 )
 from .services.preference_parser import PreferenceParser
 from .services.recommender import GameRecommender, adapt_preference_for_steam_source
@@ -114,7 +114,7 @@ class GameRecommenderPlugin(Star):
                 candidate_pool_size=candidate_pool_size,
             )
             ranked_games = await self.price_bridge.enrich_ranked_games(ranked_games, preference)
-            message = await format_recommendations_with_llm(
+            messages = await format_recommendation_messages_with_llm(
                 self.context,
                 event,
                 self.provider_id,
@@ -138,7 +138,8 @@ class GameRecommenderPlugin(Star):
             yield event.plain_result(f"游戏推荐失败：{exc}")
             return
 
-        yield event.plain_result(message)
+        for message in messages:
+            yield event.plain_result(message)
 
     @filter.command(
         "gamedesc",
