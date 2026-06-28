@@ -150,9 +150,12 @@ class SteamPriceBridge:
                 enriched.append(game)
                 continue
             summary = await self.lookup(game.title)
+            if outside_budget(summary, preference):
+                continue
             enriched.append(attach_price_summary(game, summary, preference))
 
-        enriched.sort(key=lambda item: item.score, reverse=True)
+        enriched = drop_uncertain_budget_matches(enriched, preference)
+        enriched.sort(key=lambda item: price_aware_sort_key(item, preference))
         return enriched
 
     async def lookup(self, title: str, country: str | None = None) -> GamePriceSummary | None:
@@ -376,8 +379,58 @@ def attach_missing_price_warning(game: RankedGame) -> RankedGame:
     data = dump_model(game)
     warnings = list(game.warnings)
     append_unique(warnings, "Steam 价格未获取到，预算匹配无法确认")
+    data["score"] = round(float(game.score) - 12, 2)
     data["warnings"] = warnings
     return validate_ranked_game(data)
+
+
+def outside_budget(
+    summary: GamePriceSummary | None,
+    preference: GamePreference,
+) -> bool:
+    if preference.budget is None or summary is None or summary.current_cny is None:
+        return False
+    return summary.current_cny > preference.budget and (
+        summary.lowest_cny is None or summary.lowest_cny > preference.budget
+    )
+
+
+def drop_uncertain_budget_matches(
+    games: list[RankedGame],
+    preference: GamePreference,
+) -> list[RankedGame]:
+    if preference.budget is None:
+        return games
+    if not any(current_price_within_budget(game.price_summary, preference.budget) for game in games):
+        return games
+    return [
+        game
+        for game in games
+        if current_price_within_budget(game.price_summary, preference.budget)
+    ]
+
+
+def current_price_within_budget(
+    summary: GamePriceSummary | None,
+    budget: float,
+) -> bool:
+    return summary is not None and summary.current_cny is not None and summary.current_cny <= budget
+
+
+def price_aware_sort_key(game: RankedGame, preference: GamePreference) -> tuple[int, float, str]:
+    if preference.budget is None:
+        return (0, -float(game.score), game.title)
+    summary = game.price_summary
+    budget = preference.budget
+    if summary and summary.current_cny is not None and summary.current_cny <= budget:
+        priority = 0
+    elif summary and summary.lowest_cny is not None and summary.lowest_cny <= budget:
+        priority = 1
+    elif summary is None:
+        priority = 2
+    else:
+        priority = 3
+    return (priority, -float(game.score), game.title)
 
 
 def cny_value(value: Decimal, currency: str) -> float | None:

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT.parent))
 
 from astrbot_plugin_game_recommender.services.steam_price_bridge import (  # noqa: E402
     SteamPriceBridge,
+    attach_missing_price_warning,
     attach_price_summary,
     load_price_plugin_symbols,
 )
@@ -261,6 +262,34 @@ class PriceBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("当前促销", summary.sale_status or "")
         self.assertIn("乌克兰 / UA", summary.region_summary or "")
 
+    async def test_budget_enrichment_filters_games_that_never_fit_budget(self) -> None:
+        bridge = FixedPriceBridge(
+            {
+                "Expensive Game": price_summary(current_cny=120, lowest_cny=110),
+                "Budget Game": price_summary(current_cny=40, lowest_cny=30),
+            }
+        )
+        games = [
+            RankedGame(title="Expensive Game", score=100, platforms=["PC"], stores=["Steam"]),
+            RankedGame(title="Budget Game", score=90, platforms=["PC"], stores=["Steam"]),
+        ]
+
+        enriched = await bridge.enrich_ranked_games(games, GamePreference(budget=50))
+
+        self.assertEqual([game.title for game in enriched], ["Budget Game"])
+        self.assertLessEqual(enriched[0].price_summary.current_cny, 50)
+
+    async def test_budget_enrichment_drops_unknown_prices_when_confirmed_budget_games_exist(self) -> None:
+        bridge = FixedPriceBridge({"Budget Game": price_summary(current_cny=40, lowest_cny=30)})
+        games = [
+            RankedGame(title="Unknown Price Game", score=100, platforms=["PC"], stores=["Steam"]),
+            RankedGame(title="Budget Game", score=90, platforms=["PC"], stores=["Steam"]),
+        ]
+
+        enriched = await bridge.enrich_ranked_games(games, GamePreference(budget=50))
+
+        self.assertEqual([game.title for game in enriched], ["Budget Game"])
+
     async def test_price_plugin_can_load_from_sibling_plugin_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -357,6 +386,14 @@ class BudgetScoringTest(unittest.TestCase):
         self.assertLess(enriched.score, game.score)
         self.assertTrue(any("高于预算" in warning for warning in enriched.warnings))
 
+    def test_missing_price_for_budget_request_lowers_score(self) -> None:
+        game = RankedGame(title="Unknown Price Game", score=10)
+
+        enriched = attach_missing_price_warning(game)
+
+        self.assertLess(enriched.score, game.score)
+        self.assertTrue(any("价格未获取" in warning for warning in enriched.warnings))
+
 
 def price_summary(current_cny: float, lowest_cny: float) -> GamePriceSummary:
     return GamePriceSummary(
@@ -374,6 +411,20 @@ def price_summary(current_cny: float, lowest_cny: float) -> GamePriceSummary:
         current_cny=current_cny,
         lowest_cny=lowest_cny,
     )
+
+
+class FixedPriceBridge(SteamPriceBridge):
+    def __init__(self, summaries: dict[str, GamePriceSummary]) -> None:
+        super().__init__(
+            client=object(),
+            config={},
+            service_factory=lambda _config, _client: object(),
+        )
+        self.summaries = summaries
+
+    async def lookup(self, title: str, country: str | None = None) -> GamePriceSummary | None:
+        del country
+        return self.summaries.get(title)
 
 
 class FakeSteamClient:
