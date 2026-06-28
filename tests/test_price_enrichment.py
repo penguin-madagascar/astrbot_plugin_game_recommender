@@ -90,6 +90,32 @@ class CommandRegistrationTest(unittest.TestCase):
         ):
             self.assertNotIn(removed_key, schema)
 
+    def test_readme_omits_plugin_market_release_section(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("插件市场发布信息", readme)
+        self.assertIn("## 示例", readme)
+
+    def test_dashboard_schema_copy_and_order(self) -> None:
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(next(iter(schema)), "llm_provider_id")
+        for key, config in schema.items():
+            with self.subTest(key=key):
+                self.assertTrue(str(config.get("hint") or "").strip())
+                self.assertFalse(str(config.get("description") or "").endswith("。"))
+
+    def test_price_notice_is_readonly_obvious_text(self) -> None:
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        notice = schema["steam_price_heybox_notice"]
+
+        self.assertEqual(notice["type"], "text")
+        self.assertIs(notice["_readonly"], True)
+        self.assertIs(notice["obvious_hint"], True)
+        self.assertIn("无需配置", notice["default"])
+        self.assertIn("自动启用", notice["default"])
+        self.assertIn("未安装", notice["default"])
+
     def test_repository_no_longer_mentions_itad(self) -> None:
         ignored_parts = {".git", ".venv", "__pycache__"}
         searched_suffixes = {".py", ".json", ".md", ".yaml", ".toml", ".txt"}

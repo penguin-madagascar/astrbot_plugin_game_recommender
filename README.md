@@ -33,22 +33,6 @@ pip install -r requirements.txt
 - `timeout_seconds`：HTTP 请求超时时间。
 - `steam_price_heybox_notice`：dashboard 静态提示字段，无需填写；安装 `astrbot_plugin_steam_price_heybox` 后自动启用价格增强。
 
-## 插件市场发布信息
-
-提交到 AstrBot 插件市场时可使用以下信息：
-
-```json
-{
-  "name": "astrbot_plugin_game_recommender",
-  "display_name": "游戏推荐助手",
-  "desc": "默认无需 API Key 即可基于 Steam/PC 公开数据推荐游戏；填写 RAWG API Key 后支持 Steam/PC、PlayStation、Xbox、Nintendo Switch 候选召回与筛选，并可通过 Steam 价格查询插件补充当前价和史低。",
-  "author": "jiangxingda",
-  "repo": "https://github.com/penguin-madagascar/astrbot_plugin_game_recommender",
-  "tags": ["游戏", "Steam", "推荐"],
-  "social_link": ""
-}
-```
-
 ## 示例
 
 ```text

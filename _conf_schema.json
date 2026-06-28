@@ -1,42 +1,47 @@
 {
+  "llm_provider_id": {
+    "type": "string",
+    "description": "用于偏好解析和结果解释的 LLM 提供商",
+    "hint": "留空时尝试使用当前会话模型；调用失败会降级为关键词解析和规则格式化。",
+    "_special": "select_provider",
+    "default": ""
+  },
   "rawg_api_key": {
     "type": "string",
-    "description": "RAWG API Key（可选）。",
+    "description": "RAWG API Key（可选）",
     "hint": "留空时使用 Steam 公开数据源；填写后增强多平台候选召回和 RAWG 游戏资料。",
     "default": ""
   },
   "default_region": {
     "type": "string",
-    "description": "默认地区代码。",
+    "description": "默认地区代码",
     "hint": "用于 Steam 公开数据源和 Steam 价格增强的默认地区，建议使用 CN、US、JP 等两字母代码。",
     "default": "CN"
   },
   "steam_price_heybox_notice": {
-    "type": "string",
-    "description": "Steam 价格增强提示。",
-    "hint": "无需填写；安装 astrbot_plugin_steam_price_heybox 后会自动启用价格增强，未安装时只返回游戏推荐和详情。",
-    "default": "无需填写；安装 astrbot_plugin_steam_price_heybox 后自动补充当前价、史低和跨区价格。"
+    "type": "text",
+    "description": "Steam 价格增强说明",
+    "hint": "这是提示信息，无需配置；安装 astrbot_plugin_steam_price_heybox 后会自动启用。",
+    "default": "无需配置。安装 astrbot_plugin_steam_price_heybox 后，本插件会自动启用 Steam 当前价、史低和跨区价格增强；未安装时仍可正常返回游戏推荐和详情。",
+    "_readonly": true,
+    "obvious_hint": true
   },
   "max_results": {
     "type": "int",
-    "description": "默认推荐数量上限。",
+    "description": "默认推荐数量上限",
+    "hint": "每次默认返回的推荐条数，范围 1-10；用户明确要求数量时会优先采用用户数量但不超过该上限。",
     "default": 5
   },
   "cache_ttl_hours": {
     "type": "int",
-    "description": "游戏数据查询缓存有效期（小时）。",
+    "description": "游戏数据查询缓存有效期（小时）",
+    "hint": "Steam/RAWG 查询结果的缓存时间；调大可减少请求，调小可获得更新数据。",
     "default": 24
-  },
-  "llm_provider_id": {
-    "type": "string",
-    "description": "用于偏好解析和结果解释的 LLM 提供商。",
-    "hint": "留空时尝试使用当前会话模型；调用失败会降级为关键词解析和规则格式化。",
-    "_special": "select_provider",
-    "default": ""
   },
   "timeout_seconds": {
     "type": "int",
-    "description": "HTTP 请求超时时间。",
+    "description": "HTTP 请求超时时间",
+    "hint": "Steam、RAWG 和价格查询的单次 HTTP 请求超时时间，单位秒。",
     "default": 15
   }
 }
