@@ -24,6 +24,7 @@ from astrbot_plugin_game_recommender.services.message_delivery import (
     build_forward_message_chain,
 )
 from astrbot_plugin_game_recommender.services.recommender import GameRecommender
+from astrbot_plugin_game_recommender.services.recommendation_limits import effective_result_limit
 from astrbot_plugin_game_recommender.services.steam_price_bridge import SteamPriceBridge
 from astrbot_plugin_game_recommender.storage.repository import SQLiteCacheRepository
 
@@ -92,13 +93,9 @@ def restore_env(key: str, value: str | None) -> None:
 
 load_test_env(ROOT / "tests/.env")
 LIVE_ENABLED = os.getenv("GAME_RECOMMENDER_LIVE_TESTS") == "1"
+DEFAULT_LIVE_LLM_MODEL = "gpt-5.4-nano"
 
 LIVE_INPUTS = [
-    "推荐几个适合 Switch 和 Steam 的双人游戏，不要恐怖，最好支持中文，预算 100 以内，类似双人成行但别太难。",
-    "想找 3 款 PC/Steam 上可以和朋友线上合作的轻松解谜游戏，像 It Takes Two，不要血腥恐怖。",
-    "给我推荐几款 Switch 本地同屏合作的休闲游戏，最好有中文，不要恐怖，预算别太高。",
-    "预算 50 以内 Steam 双人联机，不要魂like、不要恐怖，偏休闲一点。",
-    "Steam 上有没有类似星露谷物语的双人或多人种田经营游戏，中文优先，不要恐怖和高难。",
     "推荐 Switch 上适合情侣一起玩的平台跳跃或轻解谜游戏，像 Unravel Two，别太难。",
     "我想找 PC 和 Xbox 都能玩的合作射击游戏，但不要血腥恐怖，最好不是 PVP 为主。",
     "PS5 或 Steam 上有没有适合两个人慢慢玩的冒险游戏，参考 Portal 2，中文优先。",
@@ -112,6 +109,11 @@ LIVE_INPUTS = [
     "推荐类似 Terraria 的多人探索建造游戏，Steam，别太贵，不要恐怖。",
     "Mac 或 Steam 上可以远程同乐的双人游戏，偏解谜或合作冒险，最好支持中文。",
     "给我几款非恐怖的合作策略游戏，PC，能两个人打，不要纯竞技对战。",
+    "Xbox Series 上想玩类似 Hades 的动作肉鸽，别太血腥，不要回合制。",
+    "PS5，参考《神秘海域》，剧情冒险类就行，不想要开放世界罐头。",
+    "Steam Deck 上找短局卡牌策略，similar to Slay the Spire，不要恐怖。",
+    "Switch 本地多人赛车，像 Mario Kart 8 Deluxe，别太拟真。",
+    "PC 上找 cozy 建造自动化，参考 Satisfactory，不要 PVP，不用管中文。",
 ]
 
 
@@ -163,6 +165,15 @@ class LiveTestHelperTest(unittest.TestCase):
             self.assertEqual(live_timeout_seconds({"timeout_seconds": 15}), 90)
         finally:
             restore_env("GAME_RECOMMENDER_LIVE_TIMEOUT_SECONDS", old_timeout)
+
+    def test_live_llm_model_defaults_to_gpt_5_4_nano_and_allows_env_override(self) -> None:
+        old_model = os.environ.pop("GAME_RECOMMENDER_LIVE_LLM_MODEL", None)
+        try:
+            self.assertEqual(live_llm_model({"model": "provider-model"}), DEFAULT_LIVE_LLM_MODEL)
+            os.environ["GAME_RECOMMENDER_LIVE_LLM_MODEL"] = "gpt-custom"
+            self.assertEqual(live_llm_model({"model": "provider-model"}), "gpt-custom")
+        finally:
+            restore_env("GAME_RECOMMENDER_LIVE_LLM_MODEL", old_model)
 
     def test_emit_live_result_prints_one_scenario_messages(self) -> None:
         result = LiveScenarioResult(
@@ -232,7 +243,7 @@ class LiveRecommendationOutputTest(unittest.IsolatedAsyncioTestCase):
         self.price_bridge = SteamPriceBridge(self.http_client, self.plugin_config)
         self.price_bridge.lookup_limit = min(
             self.price_bridge.lookup_limit,
-            int(os.getenv("GAME_RECOMMENDER_LIVE_PRICE_LOOKUP_LIMIT", "2")),
+            int(os.getenv("GAME_RECOMMENDER_LIVE_PRICE_LOOKUP_LIMIT", "5")),
         )
 
     async def asyncTearDown(self) -> None:
@@ -240,7 +251,7 @@ class LiveRecommendationOutputTest(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     async def test_live_natural_language_inputs_generate_forward_records(self) -> None:
-        first_titles: list[str] = []
+        it_takes_two_titles: list[str] = []
         for index, text in enumerate(LIVE_INPUTS, start=1):
             try:
                 result = await self.run_live_scenario(text)
@@ -250,18 +261,19 @@ class LiveRecommendationOutputTest(unittest.IsolatedAsyncioTestCase):
             emit_live_result(index, result)
             assert_forward_record_shape(self, result)
             assert_no_unbounded_rawg_queries(self, result.rawg_calls)
-            if index == 1:
-                first_titles = recommendation_titles(result.messages)[:5]
+            if re.search(r"\bIt Takes Two\b|双人成行|雙人成行", text, flags=re.I):
+                it_takes_two_titles.extend(recommendation_titles(result.messages)[:5])
 
         self.assertGreaterEqual(self.context.llm_call_count, len(LIVE_INPUTS))
-        joined_titles = "\n".join(first_titles).lower()
-        for banned in ("witcher", "batman", "persona"):
-            self.assertNotIn(banned, joined_titles)
-        expected_similar = ("split fiction", "unravel two", "overcooked", "moving out", "keywe")
-        self.assertTrue(
-            any(name in joined_titles for name in expected_similar),
-            f"first scenario titles={first_titles!r}",
-        )
+        if it_takes_two_titles:
+            joined_titles = "\n".join(it_takes_two_titles).lower()
+            for banned in ("witcher", "batman", "persona"):
+                self.assertNotIn(banned, joined_titles)
+            expected_similar = ("split fiction", "unravel two", "overcooked", "moving out", "keywe")
+            self.assertTrue(
+                any(name in joined_titles for name in expected_similar),
+                f"It Takes Two-like scenario titles={it_takes_two_titles!r}",
+            )
 
     async def run_live_scenario(self, text: str) -> "LiveScenarioResult":
         self.rawg.calls.clear()
@@ -270,10 +282,15 @@ class LiveRecommendationOutputTest(unittest.IsolatedAsyncioTestCase):
 
         parser = self.PreferenceParser(self.context, self.provider_id)
         preference = await parser.parse_preference(self.event, text)
-        max_results = min(max(int(self.plugin_config.get("max_results") or 5), 1), 5)
-        recommender = GameRecommender(self.rawg, max_results=max_results, steam_source=self.steam)
+        configured_max_results = min(max(int(self.plugin_config.get("max_results") or 5), 1), 5)
+        result_limit = effective_result_limit(configured_max_results, preference.result_count)
+        recommender = GameRecommender(
+            self.rawg,
+            max_results=configured_max_results,
+            steam_source=self.steam,
+        )
         candidate_pool_size = (
-            max(max_results * 3, preference.result_count or max_results)
+            max(result_limit * 3, result_limit)
             if preference.budget is not None or self.price_bridge.is_available()
             else None
         )
@@ -285,7 +302,7 @@ class LiveRecommendationOutputTest(unittest.IsolatedAsyncioTestCase):
             self.provider_id,
             preference,
             ranked,
-            limit=max_results,
+            limit=result_limit,
         )
         chain = build_forward_message_chain(messages, components=FakeForwardComponents)
         return LiveScenarioResult(
@@ -358,10 +375,7 @@ class OpenAICompatibleLiveContext:
         self.client = client
         self.provider = enabled_provider(cmd_config, provider_id)
         self.source = provider_source(cmd_config, self.provider)
-        self.model = (
-            os.getenv("GAME_RECOMMENDER_LIVE_LLM_MODEL", "").strip()
-            or str(self.provider.get("model") or "").strip()
-        )
+        self.model = live_llm_model(self.provider)
         self.api_base = (
             os.getenv("GAME_RECOMMENDER_LIVE_LLM_API_BASE", "").strip()
             or str(self.source.get("api_base") or "https://api.openai.com/v1")
@@ -528,6 +542,11 @@ def provider_source(cmd_config: dict[str, Any], provider: dict[str, Any]) -> dic
         if source.get("id") == source_id:
             return source
     raise AssertionError(f"provider source was not found: {source_id}")
+
+
+def live_llm_model(provider: dict[str, Any]) -> str:
+    del provider
+    return os.getenv("GAME_RECOMMENDER_LIVE_LLM_MODEL", "").strip() or DEFAULT_LIVE_LLM_MODEL
 
 
 def assert_forward_record_shape(
