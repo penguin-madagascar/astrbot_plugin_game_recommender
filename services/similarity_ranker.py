@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -36,7 +37,7 @@ def build_profile_from_preference(
     preference: GamePreference,
     reference_candidates: list[GameCandidate] | None = None,
 ) -> SteamTagProfile:
-    include = canonical_tags_from_terms(preference.genres_like)
+    include = canonical_tags_from_terms([*preference.genres_like, *preference.extra_tags])
     exclude = canonical_tags_from_terms(preference.genres_dislike)
 
     if preference.players and preference.players >= 2:
@@ -70,6 +71,8 @@ def rank_steam_candidates(
 ) -> list[RankedGame]:
     ranked: list[RankedGame] = []
     for candidate in candidates:
+        if is_reference_title(candidate.title, profile.reference_titles) or is_reference_query(candidate):
+            continue
         tags = candidate_canonical_tags(candidate)
         if excluded_by_tags(tags, profile):
             continue
@@ -128,6 +131,7 @@ def rank_steam_candidates(
             TIER_ORDER.get(game.tier, 9),
             -game.facts.match_score,
             -float(game.score),
+            -release_year(game.release_date or game.released),
             game.title,
         ),
     )
@@ -186,6 +190,9 @@ def similarity_score(candidate: GameCandidate, facts: GameFacts, tier: str) -> f
         score += candidate.review_positive_ratio * 8
     if candidate.review_total:
         score += min(math.log10(max(candidate.review_total, 1)), 6) * 0.8
+    year = release_year(candidate.release_date or candidate.released)
+    if year:
+        score += min(max(year - 2000, 0), 40) * 0.03
     return score
 
 
@@ -257,3 +264,25 @@ def dedupe(values: list[str]) -> list[str]:
             result.append(value)
             seen.add(key)
     return result
+
+
+def is_reference_title(title: str, reference_titles: list[str]) -> bool:
+    normalized = normalize_title(title)
+    return any(
+        normalized == normalize_title(reference)
+        for reference in reference_titles
+        if reference
+    )
+
+
+def is_reference_query(candidate: GameCandidate) -> bool:
+    return any(reason.startswith("reference_query:") for reason in candidate.source_reasons)
+
+
+def normalize_title(value: str) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def release_year(value: str | None) -> int:
+    match = re.search(r"\b(19|20)\d{2}\b", str(value or ""))
+    return int(match.group(0)) if match else 0

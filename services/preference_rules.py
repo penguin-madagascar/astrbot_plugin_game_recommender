@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 
 from ..storage.models import GamePreference
-from .reference_data import REFERENCE_PROFILES
-from .reference_resolver import alias_for_title, extract_reference_titles
 
 
 def infer_preference_from_text(text: str) -> GamePreference:
@@ -84,14 +82,21 @@ def infer_preference_from_text(text: str) -> GamePreference:
         difficulty = "hard"
 
     reference_like = extract_reference_games(text)
-    for reference in reference_like:
-        profile = reference_profile(reference)
-        if profile:
-            genres_like.extend(profile.genres_like)
+    extra_tags = keyword_hits(
+        lower,
+        {
+            "relaxing": ("轻松", "休闲", "治愈", "别太难", "不要太难", "cozy", "relaxing"),
+            "local co-op": ("本地合作", "同屏", "分屏", "远程同乐", "remote play"),
+            "online co-op": ("线上合作", "在线合作", "联机合作", "online co-op"),
+            "family": ("亲子", "家庭", "family"),
+            "party": ("聚会", "派对", "party"),
+        },
+    )
 
     return GamePreference(
         platforms=platforms,
         genres_like=genres_like,
+        extra_tags=extra_tags,
         genres_dislike=genres_dislike,
         reference_games_like=reference_like,
         players=players,
@@ -108,6 +113,7 @@ def merge_text_preference(preference: GamePreference, text: str) -> GamePreferen
     data = dump_preference(preference)
     for field in (
         "genres_like",
+        "extra_tags",
         "genres_dislike",
         "reference_games_like",
         "reference_games_dislike",
@@ -127,12 +133,31 @@ def merge_text_preference(preference: GamePreference, text: str) -> GamePreferen
 
 
 def extract_reference_games(text: str) -> list[str]:
-    return merge_lists([], [normalize_reference_game(item) for item in extract_reference_titles(text)])
+    titles: list[str] = []
+    patterns = [
+        r"(?:类似|像|接近|参考|像是|像\s*)(?:《([^》]+)》|([^，。,.；;!?！？\n]{1,60}))",
+        r"(?:similar to|like)\s+([^，。,.；;!?！？\n]{2,60})",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            for group in match.groups():
+                title = clean_reference_title(group)
+                if title:
+                    titles.append(title)
+                    break
+    return merge_lists([], titles)
 
 
-def normalize_reference_game(value: str) -> str:
-    alias = alias_for_title(value)
-    return alias.canonical_title if alias else value
+def clean_reference_title(value: str | None) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip(" 《》\"'“”‘’")
+    if not text:
+        return ""
+    text = re.split(
+        r"(?:的|但|不过|不要|别|最好|可以|能|，|。|,|\.|；|;|!|！|\?)",
+        text,
+        maxsplit=1,
+    )[0].strip()
+    return text[:80]
 
 
 def extract_result_count(text: str) -> int | None:
@@ -140,11 +165,6 @@ def extract_result_count(text: str) -> int | None:
     if not count_match:
         return None
     return min(max(int(count_match.group(1)), 1), 10)
-
-
-def reference_profile(value: str):
-    alias = alias_for_title(value)
-    return REFERENCE_PROFILES.get(alias.rawg_slug) if alias else None
 
 
 def keyword_hits(text: str, mapping: dict[str, tuple[str, ...]]) -> list[str]:

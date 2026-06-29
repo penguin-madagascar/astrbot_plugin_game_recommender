@@ -32,10 +32,10 @@ class PlatformMatchingTest(unittest.TestCase):
         self.assertTrue(candidate_matches_platform(steam_only, "pc"))
 
     def test_attached_steam_candidate_contributes_platform_families(self) -> None:
-        rawg_candidate = GameCandidate(title="Switch Game", platforms=["Nintendo Switch"])
+        base_candidate = GameCandidate(title="Switch Game", platforms=["Nintendo Switch"])
         steam_candidate = GameCandidate(title="Switch Game", platforms=["PC"], stores=["Steam"])
 
-        families = platform_families_for(rawg_candidate, steam_candidate)
+        families = platform_families_for(base_candidate, steam_candidate)
 
         self.assertEqual(families, ["steam", "pc", "nintendo switch"])
 

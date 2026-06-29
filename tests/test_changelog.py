@@ -15,8 +15,9 @@ class ChangelogTest(unittest.TestCase):
         text = changelog.read_text(encoding="utf-8")
         self.assertIn("# 更新日志", text)
         self.assertIn("## 未发布", text)
-        self.assertIn("## 0.3.1", text)
-        self.assertIn("参考游戏归一", text)
+        self.assertIn("## 0.3.2", text)
+        self.assertIn("Steam-only", text)
+        self.assertIn("额外标签", text)
         for english_phrase in (
             "# Changelog",
             "## Unreleased",

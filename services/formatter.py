@@ -15,10 +15,15 @@ if TYPE_CHECKING:
 
 from ..storage.models import GameCandidate, GamePreference, GamePriceSummary, RankedGame
 from .explanation_builder import validate_polished_points
-from .tiered_ranker import TIER_LABELS
+
+TIER_LABELS = {
+    "strong": "强烈推荐",
+    "recommended": "推荐",
+    "backup": "备选",
+}
 
 DISCLAIMER = (
-    "以下推荐基于当前可查询到的数据，价格和平台信息可能因地区变化。"
+    "以下推荐基于当前可查询到的 Steam 公开数据，价格和商店信息可能因地区变化。"
 )
 
 
@@ -40,13 +45,13 @@ def format_recommendation_messages(
         return [(
             "一句话结论：暂时没有找到满足这些硬条件的游戏。\n"
             f"{DISCLAIMER}\n"
-            "可以尝试放宽平台、排除标签或多人条件后再查一次。"
+            "可以尝试改用 Steam/PC 请求，或放宽排除标签、人数和类型条件后再查一次。"
         )]
 
     lines = [
         (
             f"一句话结论：优先看前 {count} 款，"
-            "它们和你的平台、类型、游玩人数与参考游戏偏好最接近。"
+            "它们和你的 Steam 标签、游玩人数与参考游戏偏好最接近。"
         ),
         tier_summary(ranked_games[:count]),
         DISCLAIMER,
@@ -170,8 +175,8 @@ def format_game_block(index: int, game: RankedGame) -> list[str]:
             lines.append(f"   购买链接：{links}")
     else:
         lines.append(
-            f"   购买 / 平台建议：RAWG 记录的商店为 {stores}；"
-            "具体价格请以对应商店页面为准。"
+            f"   购买 / 平台建议：Steam 商店记录为 {stores}；"
+            "实时价格请以商店页面为准。"
         )
     if game.raw_url:
         lines.append(f"   数据来源：{game.raw_url}")
@@ -193,7 +198,8 @@ def format_game_detail(game: GameCandidate, price_summary: GamePriceSummary | No
         f"平台：{'、'.join(game.platforms) if game.platforms else '不确定'}",
         f"类型：{'、'.join(game.genres) if game.genres else '不确定'}",
         f"标签：{'、'.join(game.tags[:10]) if game.tags else '不确定'}",
-        f"RAWG 评分：{game.rating if game.rating is not None else '不确定'}",
+        f"Steam 好评率：{format_review_ratio(game.review_positive_ratio)}",
+        f"Steam 评测数：{game.review_total if game.review_total is not None else '不确定'}",
         f"Metacritic：{game.metacritic if game.metacritic is not None else '不确定'}",
         f"发售日：{game.released or '不确定'}",
         (
@@ -207,11 +213,10 @@ def format_game_detail(game: GameCandidate, price_summary: GamePriceSummary | No
         links = format_price_links(price_summary)
         if links:
             lines.append(f"购买链接：{links}")
-        lines.append("中文支持：RAWG 数据可能缺失，请以商店页面为准。")
+        lines.append("中文支持：Steam 数据可能缺失，请以商店页面为准。")
     else:
         lines.append(
-            "价格 / 中文支持：RAWG 不提供可靠实时地区价格，"
-            "中文支持也可能缺失，请以商店页面为准。"
+            "价格 / 中文支持：实时地区价格和语言信息请以 Steam 商店页面为准。"
         )
     if game.raw_url:
         lines.append(f"数据来源：{game.raw_url}")
@@ -258,6 +263,10 @@ def format_price_links(summary: GamePriceSummary) -> str:
     if summary.heybox_url:
         links.append(f"小黑盒：{summary.heybox_url}")
     return "；".join(links)
+
+
+def format_review_ratio(value: float | None) -> str:
+    return f"{value:.0%}" if value is not None else "不确定"
 
 
 def dump_model(model: Any) -> dict[str, Any]:

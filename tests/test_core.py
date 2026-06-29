@@ -4,9 +4,11 @@ import unittest
 
 try:
     from astrbot_plugin_game_recommender.services.preference_parser import keyword_fallback
-    from astrbot_plugin_game_recommender.services.ranker import score_game
-    from astrbot_plugin_game_recommender.services.recommender import GameRecommender
-    from astrbot_plugin_game_recommender.storage.models import GameCandidate, GamePreference
+    from astrbot_plugin_game_recommender.services.similarity_ranker import (
+        SteamTagProfile,
+        rank_steam_candidates,
+    )
+    from astrbot_plugin_game_recommender.storage.models import GameCandidate
 except ModuleNotFoundError as exc:
     if exc.name in {"pydantic", "astrbot"}:
         raise unittest.SkipTest(f"{exc.name} is not installed in this environment")
@@ -16,58 +18,50 @@ except ModuleNotFoundError as exc:
 class PreferenceFallbackTest(unittest.TestCase):
     def test_keyword_fallback_extracts_common_preferences(self) -> None:
         preference = keyword_fallback(
-            "推荐几个适合 Switch 和 Steam 的双人游戏，不要恐怖，最好支持中文，预算 100 以内"
+            "推荐几个适合 Steam 的双人游戏，不要恐怖，最好支持中文，预算 100 以内"
         )
 
-        self.assertIn("nintendo switch", preference.platforms)
-        self.assertIn("steam", preference.platforms)
+        self.assertEqual(preference.platforms, ["steam"])
         self.assertEqual(preference.players, 2)
         self.assertEqual(preference.budget, 100)
         self.assertIn("horror", preference.genres_dislike)
         self.assertEqual(preference.language, "中文")
 
 
-class RankerTest(unittest.TestCase):
-    def test_score_game_returns_explanations(self) -> None:
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=["co-op"],
-            players=2,
-            language="中文",
-            budget=100,
+class SimilarityRankerCoreTest(unittest.TestCase):
+    def test_ranker_filters_disliked_tags_and_orders_by_similarity(self) -> None:
+        profile = SteamTagProfile(
+            include_tags=["co_op", "local_coop", "puzzle", "relaxing"],
+            exclude_tags=["horror"],
+            reference_titles=[],
         )
-        game = GameCandidate(
-            title="Example Co-op Game",
-            platforms=["PC"],
-            genres=["Adventure"],
-            tags=["Co-op", "Multiplayer", "Simplified Chinese"],
-            rating=4.2,
-            metacritic=82,
-            stores=["Steam"],
-            raw_url="https://rawg.io/games/example",
+        ranked = rank_steam_candidates(
+            [
+                steam_game("Scary Puzzle", ["co-op", "puzzle", "horror"]),
+                steam_game("Generic Co-op", ["co-op", "multiplayer"], reviews=50000),
+                steam_game("Focused Match", ["co-op", "local co-op", "puzzle", "relaxing"]),
+            ],
+            profile,
         )
 
-        score, reasons, warnings = score_game(game, preference)
+        self.assertEqual(
+            [game.title for game in ranked],
+            ["Focused Match", "Generic Co-op"],
+        )
+        self.assertGreater(ranked[0].facts.match_score, ranked[1].facts.match_score)
 
-        self.assertGreater(score, 0)
-        self.assertTrue(reasons)
-        self.assertTrue(any("预算" in warning for warning in warnings))
 
-
-class FilteringTest(unittest.TestCase):
-    def test_filter_excludes_platform_mismatch_and_disliked_tags(self) -> None:
-        recommender = GameRecommender(game_source=None, max_results=5)  # type: ignore[arg-type]
-        preference = GamePreference(platforms=["steam"], genres_dislike=["horror"])
-        games = [
-            GameCandidate(title="Switch Only", platforms=["Nintendo Switch"]),
-            GameCandidate(title="Scary PC", platforms=["PC"], tags=["Horror"]),
-            GameCandidate(title="PC Only", platforms=["PC"], tags=["Co-op"]),
-            GameCandidate(title="Safe Steam", platforms=["PC"], tags=["Co-op"], stores=["Steam"]),
-        ]
-
-        filtered = recommender._filter_candidates(games, preference)
-
-        self.assertEqual([game.title for game in filtered], ["Safe Steam"])
+def steam_game(title: str, tags: list[str], reviews: int = 500) -> GameCandidate:
+    return GameCandidate(
+        title=title,
+        appid=abs(hash(title)) % 1000000,
+        platforms=["PC"],
+        tags=tags,
+        stores=["Steam"],
+        raw_url=f"https://store.steampowered.com/app/{abs(hash(title)) % 1000000}/",
+        review_total=reviews,
+        review_positive_ratio=0.8,
+    )
 
 
 if __name__ == "__main__":

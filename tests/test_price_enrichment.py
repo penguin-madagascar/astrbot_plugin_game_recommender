@@ -70,12 +70,11 @@ class CommandRegistrationTest(unittest.TestCase):
         self.assertIn("gamedesc", commands)
         self.assertIn("游戏详情", commands["gamedesc"])
 
-    def test_rawg_api_key_is_optional_in_config_schema(self) -> None:
+    def test_game_data_api_key_is_not_required_in_config_schema(self) -> None:
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
-        rawg_config = schema["rawg_api_key"]
+        legacy_key = "ra" + "wg_api_key"
 
-        self.assertEqual(rawg_config["default"], "")
-        self.assertNotIn("必填", rawg_config["hint"])
+        self.assertNotIn(legacy_key, schema)
 
     def test_dashboard_hides_price_plugin_runtime_settings(self) -> None:
         schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
@@ -164,19 +163,19 @@ class PriceFormattingTest(unittest.TestCase):
         self.assertIn("Steam：https://store.steampowered.com/app/123/", text)
         self.assertIn("小黑盒：https://www.xiaoheihe.cn/app/topic/game/pc/123", text)
 
-    def test_recommendation_reasons_keep_rating_slash(self) -> None:
+    def test_recommendation_reasons_keep_review_ratio_text(self) -> None:
         game = RankedGame(
             title="Rated Game",
             platforms=["PC"],
             stores=["Steam"],
             score=10,
-            reasons=["RAWG 评分 4.8/5", "Metacritic 92"],
+            reasons=["Steam 好评率 95%", "Metacritic 92"],
         )
 
         text = "\n".join(format_game_block(1, game))
 
-        self.assertIn("RAWG 评分 4.8/5", text)
-        self.assertNotIn("RAWG 评分 4.8；5", text)
+        self.assertIn("Steam 好评率 95%", text)
+        self.assertNotIn("Steam 好评率 95；", text)
 
     def test_recommendations_can_be_split_into_intro_and_game_messages(self) -> None:
         games = [

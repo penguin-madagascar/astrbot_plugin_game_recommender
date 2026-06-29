@@ -77,6 +77,7 @@ def normalize_platform(value: str) -> str:
 class GamePreference(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     genres_like: list[str] = Field(default_factory=list)
+    extra_tags: list[str] = Field(default_factory=list)
     genres_dislike: list[str] = Field(default_factory=list)
     reference_games_like: list[str] = Field(default_factory=list)
     reference_games_dislike: list[str] = Field(default_factory=list)
@@ -96,6 +97,7 @@ class GamePreference(BaseModel):
 
     @validator(
         "genres_like",
+        "extra_tags",
         "genres_dislike",
         "reference_games_like",
         "reference_games_dislike",
@@ -144,8 +146,8 @@ class ResolvedReferenceGame(BaseModel):
     raw_text: str
     normalized_title: str
     canonical_title: str
-    rawg_id: int | None = None
-    rawg_slug: str | None = None
+    appid: int | None = None
+    store_url: str | None = None
     confidence: float = 0.0
     source: str = "text"
     genres: list[str] = Field(default_factory=list)
@@ -157,7 +159,7 @@ class ResolvedReferenceGame(BaseModel):
     def _normalize_lists(cls, value: Any) -> list[str]:
         return split_text_list(value)
 
-    @validator("raw_text", "normalized_title", "canonical_title", "rawg_slug", "source", pre=True)
+    @validator("raw_text", "normalized_title", "canonical_title", "store_url", "source", pre=True)
     def _normalize_text(cls, value: Any) -> str:
         return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -179,7 +181,6 @@ class GameCandidate(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     genres: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    rating: float | None = None
     metacritic: int | None = None
     released: str | None = None
     release_date: str | None = None
@@ -199,7 +200,6 @@ class GameCandidate(BaseModel):
     fit_points: list[str] = Field(default_factory=list)
     risk_points: list[str] = Field(default_factory=list)
     facts: "GameFacts" = Field(default_factory=lambda: GameFacts())
-    rawg_id: int | None = None
     description: str | None = None
 
     @validator("platforms", "genres", "tags", "stores", pre=True)

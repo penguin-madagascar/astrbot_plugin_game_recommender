@@ -13,13 +13,15 @@ from .preference_rules import infer_preference_from_text, merge_text_preference
 
 SYSTEM_PROMPT = """你是游戏推荐插件的偏好解析器。
 只把用户自然语言解析成 JSON，不要推荐游戏，不要补充解释，不要使用 Markdown。
-未知字段使用空数组或 null，不要编造价格、平台、语言支持等事实。"""
+插件只覆盖 Steam/PC；你只负责抽取用户明确或隐含的标签、排除项和相似游戏名。
+未知字段使用空数组或 null，不要编造价格、平台、语言支持、评测或商店事实。"""
 
 PREFERENCE_SCHEMA_HINT = """
 返回 JSON 字段必须包括：
 {
-  "platforms": ["steam", "playstation", "nintendo switch"],
+  "platforms": ["steam", "pc"],
   "genres_like": [],
+  "extra_tags": [],
   "genres_dislike": [],
   "reference_games_like": [],
   "reference_games_dislike": [],
@@ -30,6 +32,11 @@ PREFERENCE_SCHEMA_HINT = """
   "mood": null,
   "result_count": 5
 }
+说明：
+- genres_like 放用户明确说出的类型/玩法标签。
+- extra_tags 放你从自然语言总结出的补充标签，例如“轻松”“本地合作”“剧情合作”“短流程”。
+- reference_games_like 只放用户提到的相似游戏名，不要把相似游戏扩写成推荐结果。
+- genres_dislike 放排除标签，例如恐怖、魂类、肉鸽、纯单人、pvp。
 """
 
 
@@ -91,7 +98,8 @@ class PreferenceParser:
 def parse_preference_json(text: str) -> GamePreference:
     payload = extract_json_object(text)
     data = json.loads(payload)
-    return GamePreference.parse_obj(data)
+    validator = getattr(GamePreference, "model_validate", None)
+    return validator(data) if validator else GamePreference.parse_obj(data)
 
 
 def extract_json_object(text: str) -> str:

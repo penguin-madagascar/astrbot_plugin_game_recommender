@@ -4,12 +4,6 @@ import unittest
 from typing import Any
 
 from astrbot_plugin_game_recommender.clients.steam import SteamClient
-from astrbot_plugin_game_recommender.services.recommender import (
-    STEAM_FALLBACK_WARNING,
-    GameRecommender,
-    adapt_preference_for_steam_source,
-)
-from astrbot_plugin_game_recommender.storage.models import GameCandidate, GamePreference
 
 
 class SteamClientTest(unittest.IsolatedAsyncioTestCase):
@@ -84,40 +78,6 @@ class SteamClientTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(key.startswith("steam:") for key in cache.keys))
 
 
-class GameRecommenderSourceTest(unittest.IsolatedAsyncioTestCase):
-    async def test_recommender_uses_generic_game_source(self) -> None:
-        source = FakeGameSource(
-            [
-                GameCandidate(title="Switch Only", platforms=["Nintendo Switch"]),
-                GameCandidate(title="Scary PC", platforms=["PC"], tags=["Horror"]),
-                GameCandidate(title="Safe Steam", platforms=["PC"], tags=["Co-op"], stores=["Steam"]),
-            ]
-        )
-        recommender = GameRecommender(source, max_results=5)
-
-        ranked = await recommender.recommend(
-            GamePreference(platforms=["steam"], genres_dislike=["horror"])
-        )
-
-        self.assertEqual([game.title for game in ranked], ["Safe Steam"])
-        self.assertGreaterEqual(len(source.calls), 1)
-
-    async def test_steam_fallback_adapts_non_steam_platform_preferences(self) -> None:
-        source = FakeGameSource(
-            [
-                GameCandidate(title="Safe Steam", platforms=["PC"], tags=["Co-op"], stores=["Steam"]),
-            ]
-        )
-        preference = GamePreference(platforms=["nintendo switch"], genres_like=["co-op"])
-
-        adapt_preference_for_steam_source(preference)
-        ranked = await GameRecommender(source, max_results=5).recommend(preference)
-
-        self.assertEqual(preference.platforms, ["steam"])
-        self.assertIn(STEAM_FALLBACK_WARNING, preference.parse_warnings)
-        self.assertEqual([game.title for game in ranked], ["Safe Steam"])
-
-
 def steam_detail_payload() -> dict[str, Any]:
     return {
         "name": "Co-op Test Game",
@@ -164,16 +124,6 @@ class MemoryCache:
     async def set_json(self, key: str, payload: Any) -> None:
         self.keys.append(key)
         self.payloads[key] = payload
-
-
-class FakeGameSource:
-    def __init__(self, games: list[GameCandidate]) -> None:
-        self.games = games
-        self.calls: list[dict[str, Any]] = []
-
-    async def search_games(self, **kwargs: Any) -> list[GameCandidate]:
-        self.calls.append(kwargs)
-        return self.games
 
 
 if __name__ == "__main__":

@@ -3,616 +3,176 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from astrbot_plugin_game_recommender.services.recommender import (
-    GameRecommender,
-    dedupe_candidates,
+from astrbot_plugin_game_recommender.services.similarity_ranker import (
+    build_profile_from_preference,
+    rank_steam_candidates,
 )
-from astrbot_plugin_game_recommender.services.game_facts import build_game_facts
-from astrbot_plugin_game_recommender.services.search_plan import build_search_plan
-from astrbot_plugin_game_recommender.services.tiered_ranker import build_ranked_game
+from astrbot_plugin_game_recommender.services.steam_index import SteamGameIndexService
 from astrbot_plugin_game_recommender.storage.models import GameCandidate, GamePreference
 
 
 class RecommendationQualityTest(unittest.IsolatedAsyncioTestCase):
-    async def test_reference_profile_seed_recall_prioritizes_similar_coop_games(self) -> None:
-        source = SearchAwareFakeGameSource(
-            generic_games=[
-                GameCandidate(
-                    title="The Witcher 3 Wild Hunt - Complete Edition",
-                    platforms=["PC", "Nintendo Switch"],
-                    genres=["RPG"],
-                    tags=["Fantasy", "Singleplayer"],
-                    rating=4.8,
-                    stores=["Steam", "Nintendo Store"],
-                ),
-                GameCandidate(
-                    title="Baldur's Gate III",
-                    platforms=["PC", "PlayStation 5"],
-                    genres=["RPG"],
-                    tags=["Choices Matter", "Turn-Based"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Batman: Arkham City - Game of the Year Edition",
-                    platforms=["PC"],
-                    genres=["Action"],
-                    tags=["Singleplayer"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-            ],
-            search_games={
-                "Split Fiction": [
-                    co_op_game(
-                        "Split Fiction",
-                        rating=4.7,
-                        platforms=["PC", "Nintendo Switch 2"],
-                        tags=[
-                            "Co-op",
-                            "Online Co-Op",
-                            "Local Co-op",
-                            "Split Screen",
-                            "Puzzle",
-                            "Adventure",
-                            "Simplified Chinese",
-                        ],
+    async def test_reference_game_tags_expand_profile_without_seed_titles(self) -> None:
+        cache = MemoryCache()
+        steam = SearchAwareSteamClient(
+            {
+                "双人成行": [
+                    steam_game(
+                        "It Takes Two",
+                        ["Co-op", "Local Co-op", "Puzzle", "Adventure", "Split Screen"],
                     )
                 ],
-                "Unravel Two": [co_op_game("Unravel Two", rating=4.2)],
-                "Overcooked! All You Can Eat": [
-                    co_op_game("Overcooked! All You Can Eat", rating=4.1, tags=["Co-op", "Party"])
+                "co op relaxing multiplayer": [
+                    steam_game(
+                        "Focused Co-op Puzzle",
+                        ["Co-op", "Local Co-op", "Puzzle", "Adventure", "Casual"],
+                    ),
+                    steam_game("Generic Multiplayer", ["Multiplayer"]),
                 ],
-            },
+                "co op": [steam_game("Generic Co-op", ["Co-op", "Multiplayer"])],
+                "local coop": [steam_game("Local Co-op Game", ["Co-op", "Local Co-op"])],
+                "puzzle": [steam_game("Puzzle Game", ["Puzzle", "Singleplayer"])],
+                "adventure": [steam_game("Adventure Game", ["Adventure", "Singleplayer"])],
+            }
         )
-        preference = GamePreference(
-            platforms=["nintendo switch", "steam"],
-            genres_dislike=["horror"],
-            reference_games_like=["双人成行"],
-            players=2,
-            language="中文",
-            difficulty="easy",
-            result_count=5,
-        )
+        service = SteamGameIndexService(steam, cache, min_review_count=50)
 
-        ranked = await GameRecommender(source, max_results=5).recommend(
-            preference,
-            candidate_pool_size=10,
-        )
-
-        titles = [game.title for game in ranked[:5]]
-        self.assertIn("Split Fiction", titles[:3])
-        self.assertIn("Unravel Two", titles)
-        self.assertNotIn("The Witcher 3 Wild Hunt - Complete Edition", titles)
-        self.assertNotIn("Baldur's Gate III", titles)
-        self.assertNotIn("Batman: Arkham City - Game of the Year Edition", titles)
-        split_fiction = next(game for game in ranked if game.title == "Split Fiction")
-        self.assertTrue(any("Switch 2" in warning for warning in split_fiction.warnings))
-        self.assertTrue(any(call.get("search") == "Split Fiction" for call in source.calls))
-
-    async def test_it_takes_two_like_request_filters_bad_matches(self) -> None:
-        source = FakeGameSource(
-            [
-                GameCandidate(
-                    title="The Witcher 3: Wild Hunt - Blood and Wine",
-                    platforms=["PC", "PlayStation 4"],
-                    genres=["RPG"],
-                    tags=["Horror", "Blood"],
-                    rating=4.8,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Persona 5 Royal",
-                    platforms=["PC", "Nintendo Switch"],
-                    genres=["RPG"],
-                    tags=["Singleplayer", "JRPG"],
-                    rating=4.8,
-                    stores=["Steam", "Nintendo Store"],
-                ),
-                GameCandidate(
-                    title="Warhammer 40,000: Dawn of War - Definitive Edition",
-                    platforms=["PC"],
-                    genres=["Strategy"],
-                    tags=["Singleplayer", "Multiplayer", "Co-op"],
-                    rating=4.8,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="It Takes Two",
-                    platforms=["PC", "Nintendo Switch"],
-                    genres=["Adventure", "Platformer"],
-                    tags=["Co-op", "Local Co-op", "Split Screen", "Simplified Chinese"],
-                    rating=4.5,
-                    stores=["Steam", "Nintendo Store"],
-                ),
-                co_op_game("Unravel Two", rating=4.2),
-                co_op_game("Overcooked! All You Can Eat", rating=4.1, tags=["Co-op", "Party"]),
-                co_op_game("PHOGS!", rating=3.9, tags=["Co-op", "Puzzle", "Casual"]),
-            ]
-        )
-        preference = GamePreference(
-            platforms=["nintendo switch", "steam"],
-            genres_like=[
-                "co-op",
-                "local co-op",
-                "puzzle",
-                "adventure",
-                "casual",
-                "platformer",
-            ],
-            genres_dislike=["horror"],
-            reference_games_like=["it takes two"],
-            players=2,
-            language="中文",
-            difficulty="easy",
-            result_count=3,
-        )
-
-        ranked = await GameRecommender(source, max_results=3).recommend(
-            preference,
-            candidate_pool_size=8,
-        )
-
-        titles = [game.title for game in ranked[:3]]
-        self.assertEqual(set(titles), {"Unravel Two", "Overcooked! All You Can Eat", "PHOGS!"})
-        self.assertEqual(titles[0], "Unravel Two")
-        self.assertTrue(all("It Takes Two" not in title for title in titles))
-        self.assertTrue(all("Witcher" not in title for title in titles))
-        self.assertNotIn("Persona 5 Royal", titles)
-        self.assertNotIn("Warhammer 40,000: Dawn of War - Definitive Edition", titles)
-
-    async def test_stardew_like_request_prioritizes_farming_coop_games(self) -> None:
-        source = SearchAwareFakeGameSource(
-            generic_games=[
-                GameCandidate(
-                    title="Chess",
-                    platforms=["PC"],
-                    genres=["Puzzle", "Casual", "Simulation"],
-                    tags=["Split Screen", "Remote Play Together", "Simplified Chinese"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Monster Prom 3: Monster Roadtrip",
-                    platforms=["PC"],
-                    genres=["Casual", "Strategy", "Simulation"],
-                    tags=["Co-op", "Online Co-op"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Stardew Valley",
-                    platforms=["PC"],
-                    genres=["Simulation", "RPG"],
-                    tags=["Co-op", "Farming", "Crafting", "Simplified Chinese"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Minecraft",
-                    platforms=["PC"],
-                    genres=["Simulation"],
-                    tags=["Multiplayer", "Crafting", "Building", "Simplified Chinese"],
-                    rating=4.4,
-                    stores=[],
-                ),
-                GameCandidate(
-                    title="Factorio",
-                    platforms=["PC"],
-                    genres=["Strategy", "Simulation"],
-                    tags=["Co-op", "Automation", "Management", "Simplified Chinese"],
-                    rating=4.4,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Baldur's Gate III",
-                    platforms=["PC"],
-                    genres=["RPG", "Strategy"],
-                    tags=[
-                        "Co-op",
-                        "Online Co-op",
-                        "Local Co-op",
-                        "Split Screen",
-                        "Story Rich",
-                        "Simplified Chinese",
-                    ],
-                    rating=5.0,
-                    metacritic=96,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Divinity: Original Sin 2",
-                    platforms=["PC"],
-                    genres=["RPG", "Strategy"],
-                    tags=[
-                        "Co-op",
-                        "Online Co-op",
-                        "Local Co-op",
-                        "Split Screen",
-                        "Turn-Based",
-                        "Simplified Chinese",
-                    ],
-                    rating=5.0,
-                    metacritic=95,
-                    stores=["Steam"],
-                ),
-            ],
-            search_games={
-                "Sun Haven": [
-                    farming_coop_game(
-                        "Sun Haven",
-                        tags=["Co-op", "Online Co-op", "Farming", "Crafting", "Fantasy", "Simplified Chinese"],
-                        rating=4.1,
-                    )
-                ],
-                "Roots of Pacha": [
-                    farming_coop_game(
-                        "Roots of Pacha",
-                        tags=["Co-op", "Online Co-op", "Farming", "Crafting", "Relaxing", "Simplified Chinese"],
-                        rating=4.2,
-                    )
-                ],
-                "Farm Together 2": [
-                    farming_coop_game(
-                        "Farm Together 2",
-                        tags=["Co-op", "Online Co-op", "Farming", "Management", "Casual", "Simplified Chinese"],
-                        rating=4.3,
-                    )
-                ],
-                "Dinkum": [
-                    farming_coop_game(
-                        "Dinkum",
-                        tags=["Co-op", "Online Co-op", "Farming", "Crafting", "Building", "Simplified Chinese"],
-                        rating=4.0,
-                    )
-                ],
-                "Fae Farm": [
-                    farming_coop_game(
-                        "Fae Farm",
-                        tags=["Co-op", "Online Co-op", "Farming", "Crafting", "Relaxing", "Simplified Chinese"],
-                        rating=3.9,
-                    )
-                ],
-            },
-        )
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=[
-                "simulation",
-                "casual",
-                "rpg",
-                "co-op",
-                "local co-op",
-                "multiplayer",
-                "farming",
-                "management",
-                "crafting",
-                "building",
-                "relaxing",
-            ],
-            genres_dislike=["horror"],
-            reference_games_like=["星露谷物语"],
-            players=2,
-            language="中文",
-            difficulty="easy",
-            result_count=5,
-        )
-
-        ranked = await GameRecommender(source, max_results=5).recommend(
-            preference,
-            candidate_pool_size=10,
-        )
-
-        titles = [game.title for game in ranked[:5]]
-        self.assertEqual(
-            set(titles),
-            {"Farm Together 2", "Roots of Pacha", "Sun Haven", "Dinkum", "Fae Farm"},
-        )
-        self.assertTrue(all(game.facts.required_hits for game in ranked[:5]))
-        self.assertTrue(all("farming" in game.facts.required_hits for game in ranked[:5]))
-        self.assertNotIn("Stardew Valley", titles)
-        self.assertNotIn("Chess", titles)
-        self.assertNotIn("Monster Prom 3: Monster Roadtrip", titles)
-        self.assertNotIn("Minecraft", titles)
-        self.assertNotIn("Baldur's Gate III", titles)
-        self.assertNotIn("Divinity: Original Sin 2", titles)
-
-    async def test_stardew_profile_does_not_treat_generic_coop_games_as_strong_match(self) -> None:
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=[
-                "simulation",
-                "casual",
-                "rpg",
-                "co-op",
-                "local co-op",
-                "multiplayer",
-                "farming",
-                "management",
-                "crafting",
-                "building",
-                "relaxing",
-            ],
-            reference_games_like=["Stardew Valley"],
-            players=2,
-            language="中文",
-            difficulty="easy",
-        )
-        generic_games = [
-            GameCandidate(
-                title="Baldur's Gate III",
-                platforms=["PC"],
-                genres=["RPG", "Strategy"],
-                tags=[
-                    "Co-op",
-                    "Online Co-op",
-                    "Local Co-op",
-                    "Multiplayer",
-                    "Split Screen",
-                    "Story Rich",
-                    "Simplified Chinese",
-                ],
-                rating=5.0,
-                metacritic=96,
-                stores=["Steam"],
+        ranked = await service.recommend(
+            GamePreference(
+                platforms=["steam"],
+                genres_like=["co-op"],
+                extra_tags=["轻松"],
+                reference_games_like=["双人成行"],
+                players=2,
+                result_count=3,
             ),
-            GameCandidate(
-                title="Factorio",
-                platforms=["PC"],
-                genres=["Strategy", "Simulation"],
-                tags=[
-                    "Co-op",
-                    "Online Co-op",
-                    "Multiplayer",
-                    "Crafting",
-                    "Building",
-                    "Management",
-                    "Simplified Chinese",
-                ],
-                rating=5.0,
-                metacritic=90,
-                stores=["Steam"],
+            limit=3,
+        )
+
+        self.assertEqual(ranked[0].title, "Focused Co-op Puzzle")
+        self.assertNotIn("It Takes Two", [game.title for game in ranked])
+        self.assertIn("puzzle", ranked[0].facts.matched_like_terms)
+        self.assertTrue(any(call["search"] == "双人成行" for call in steam.calls))
+
+    async def test_cached_index_orders_tag_coverage_before_reviews(self) -> None:
+        cache = MemoryCache(
+            {
+                "steam_index:entries": [
+                    dump_model(
+                        steam_game(
+                            "High Review Generic Co-op",
+                            ["Co-op", "Multiplayer"],
+                            reviews=90000,
+                            ratio=0.96,
+                        )
+                    ),
+                    dump_model(
+                        steam_game(
+                            "Lower Review Better Match",
+                            ["Co-op", "Local Co-op", "Puzzle", "Casual", "Relaxing"],
+                            reviews=600,
+                            ratio=0.78,
+                        )
+                    ),
+                ]
+            }
+        )
+        service = SteamGameIndexService(NoLiveSearchSteamClient(), cache)
+
+        ranked = await service.recommend(
+            GamePreference(
+                platforms=["steam"],
+                genres_like=["co-op", "local co-op", "puzzle"],
+                extra_tags=["轻松"],
+                players=2,
+                result_count=2,
             ),
-        ]
-
-        for candidate in generic_games:
-            with self.subTest(candidate=candidate.title):
-                facts = build_game_facts(candidate, preference)
-                ranked = build_ranked_game(candidate, preference, facts)
-
-                self.assertIsNotNone(ranked)
-                assert ranked is not None
-                self.assertLess(ranked.facts.reference_similarity, 0.75)
-                self.assertNotEqual(ranked.tier, "strong")
-
-    async def test_tag_coverage_beats_rating_inside_same_tier(self) -> None:
-        source = FakeGameSource(
-            [
-                GameCandidate(
-                    title="High Score Generic Co-op",
-                    platforms=["PC"],
-                    genres=["Simulation"],
-                    tags=[
-                        "Co-op",
-                        "Local Co-op",
-                        "Multiplayer",
-                        "Simplified Chinese",
-                    ],
-                    rating=5.0,
-                    metacritic=96,
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="Lower Score Better Tag Match",
-                    platforms=["PC"],
-                    genres=["Simulation", "Casual"],
-                    tags=[
-                        "Co-op",
-                        "Local Co-op",
-                        "Multiplayer",
-                        "Farming",
-                        "Crafting",
-                        "Building",
-                        "Management",
-                        "Relaxing",
-                        "Simplified Chinese",
-                    ],
-                    rating=3.6,
-                    metacritic=60,
-                    stores=["Steam"],
-                ),
-            ]
+            limit=2,
         )
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=[
-                "simulation",
-                "casual",
-                "co-op",
-                "local co-op",
-                "multiplayer",
-                "farming",
-                "crafting",
-                "building",
-                "management",
-                "relaxing",
-            ],
-            players=2,
-            language="中文",
-            result_count=2,
-        )
-
-        ranked = await GameRecommender(source, max_results=2).recommend(preference)
 
         self.assertEqual(
             [game.title for game in ranked],
-            ["Lower Score Better Tag Match", "High Score Generic Co-op"],
+            ["Lower Review Better Match", "High Review Generic Co-op"],
         )
-        self.assertGreater(ranked[0].facts.match_coverage, ranked[1].facts.match_coverage)
         self.assertGreater(ranked[0].facts.match_score, ranked[1].facts.match_score)
 
-    def test_game_facts_exposes_required_tag_misses(self) -> None:
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=[
-                "simulation",
-                "casual",
-                "co-op",
-                "multiplayer",
-                "farming",
-                "crafting",
-            ],
-            reference_games_like=["Stardew Valley"],
-            players=2,
-        )
-        candidate = GameCandidate(
-            title="Generic Simulation Co-op",
-            platforms=["PC"],
-            genres=["Simulation", "Casual"],
-            tags=["Co-op", "Multiplayer", "Crafting"],
-            rating=5.0,
-            stores=["Steam"],
-        )
-
-        facts = build_game_facts(candidate, preference)
-        ranked = build_ranked_game(candidate, preference, facts)
-
-        self.assertIn("farming", facts.required_misses)
-        self.assertIn("co-op", facts.required_hits)
-        self.assertIn("farming", facts.missing_like_terms)
-        self.assertLess(facts.match_coverage, 1)
-        self.assertIsNotNone(ranked)
-        assert ranked is not None
-        self.assertNotEqual(ranked.tier, "strong")
-
-    def test_explicit_tag_search_plan_adds_relevance_recall_before_rating_supplement(self) -> None:
-        preference = GamePreference(
-            platforms=["steam"],
-            genres_like=["simulation", "casual", "co-op", "farming", "crafting"],
-            players=2,
-        )
-
-        queries = build_search_plan(preference, [], page_size=20)
-        rawg_queries = [
-            query
-            for query in queries
-            if query.source == "rawg" and (query.genres or query.tags or query.platforms)
-        ]
-
-        self.assertGreaterEqual(len(rawg_queries), 2)
-        self.assertEqual(rawg_queries[0].ordering, "-relevance")
-        self.assertIn("-rating", [query.ordering for query in rawg_queries[1:]])
-
-    async def test_explicit_preferences_do_not_fall_back_to_empty_rawg_query(self) -> None:
-        source = FakeGameSource([co_op_game("Unravel Two")])
-        preference = GamePreference(
-            players=2,
-            language="中文",
-            budget=100,
-            result_count=1,
-        )
-
-        await GameRecommender(source, max_results=1).recommend(preference)
-
-        self.assertTrue(source.calls)
-        self.assertTrue(
-            all(
-                call.get("search")
-                or call.get("platforms")
-                or call.get("genres")
-                or call.get("tags")
-                for call in source.calls
-            )
-        )
-
-
-class CandidateDedupeTest(unittest.TestCase):
-    def test_dedupe_prefers_complete_game_over_witcher_dlc_entries(self) -> None:
-        deduped = dedupe_candidates(
+    def test_exclude_tags_filter_horror_and_singleplayer_only(self) -> None:
+        ranked = rank_steam_candidates(
             [
-                GameCandidate(
-                    title="The Witcher 3: Wild Hunt - Blood and Wine",
-                    platforms=["PC"],
-                    tags=["DLC"],
-                    stores=["Steam"],
-                ),
-                GameCandidate(
-                    title="The Witcher 3 Wild Hunt - Complete Edition",
-                    platforms=["PC", "Nintendo Switch"],
-                    stores=["Steam", "Nintendo Store"],
-                ),
-                GameCandidate(
-                    title="The Witcher 3: Wild Hunt - Hearts of Stone",
-                    platforms=["PC"],
-                    tags=["Expansion"],
-                    stores=["Steam"],
-                ),
-            ]
+                steam_game("Safe Co-op Puzzle", ["Co-op", "Puzzle"]),
+                steam_game("Scary Co-op Puzzle", ["Co-op", "Puzzle", "Horror"]),
+                steam_game("Solo Puzzle", ["Singleplayer", "Puzzle"]),
+            ],
+            build_profile_from_preference(
+                GamePreference(
+                    platforms=["steam"],
+                    genres_like=["co-op", "puzzle"],
+                    genres_dislike=["horror"],
+                    players=2,
+                )
+            ),
         )
 
-        self.assertEqual(
-            [game.title for game in deduped],
-            ["The Witcher 3 Wild Hunt - Complete Edition"],
-        )
+        self.assertEqual([game.title for game in ranked], ["Safe Co-op Puzzle"])
 
 
-def co_op_game(
-    title: str,
-    rating: float = 4.0,
-    tags: list[str] | None = None,
-    platforms: list[str] | None = None,
-) -> GameCandidate:
-    return GameCandidate(
-        title=title,
-        platforms=platforms or ["PC", "Nintendo Switch"],
-        genres=["Adventure", "Puzzle"],
-        tags=tags or ["Co-op", "Local Co-op", "Puzzle", "Casual", "Simplified Chinese"],
-        rating=rating,
-        stores=["Steam", "Nintendo Store"],
-    )
-
-
-def farming_coop_game(
+def steam_game(
     title: str,
     tags: list[str],
-    rating: float = 4.1,
+    reviews: int = 500,
+    ratio: float = 0.8,
 ) -> GameCandidate:
+    appid = abs(hash(title)) % 1000000
     return GameCandidate(
         title=title,
+        appid=appid,
         platforms=["PC"],
-        genres=["Simulation", "Casual", "RPG"],
+        genres=[],
         tags=tags,
-        rating=rating,
         stores=["Steam"],
+        raw_url=f"https://store.steampowered.com/app/{appid}/",
+        review_total=reviews,
+        review_positive_ratio=ratio,
+        review_recent_ratio=ratio,
+        index_source="steam_index",
     )
 
 
-class FakeGameSource:
-    def __init__(self, games: list[GameCandidate]) -> None:
-        self.games = games
+def dump_model(model: Any) -> dict[str, Any]:
+    dumper = getattr(model, "model_dump", None)
+    return dumper() if dumper else model.dict()
+
+
+class MemoryCache:
+    def __init__(self, payloads: dict[str, Any] | None = None) -> None:
+        self.payloads = payloads or {}
+        self.writes: dict[str, Any] = {}
+
+    async def get_json(self, key: str, _ttl_hours: int) -> Any | None:
+        return self.payloads.get(key)
+
+    async def set_json(self, key: str, payload: Any) -> None:
+        self.writes[key] = payload
+        self.payloads[key] = payload
+
+
+class SearchAwareSteamClient:
+    def __init__(self, by_search: dict[str, list[GameCandidate]]) -> None:
+        self.by_search = by_search
         self.calls: list[dict[str, Any]] = []
 
     async def search_games(self, **kwargs: Any) -> list[GameCandidate]:
         self.calls.append(kwargs)
-        return self.games
+        return self.by_search.get(kwargs.get("search"), [])
+
+    async def get_review_summary(self, appid: int):
+        del appid
+        return None
 
 
-class SearchAwareFakeGameSource:
-    def __init__(
-        self,
-        generic_games: list[GameCandidate],
-        search_games: dict[str, list[GameCandidate]],
-    ) -> None:
-        self.generic_games = generic_games
-        self.search_games_by_query = search_games
-        self.calls: list[dict[str, Any]] = []
-
-    async def search_games(self, **kwargs: Any) -> list[GameCandidate]:
-        self.calls.append(kwargs)
-        query = kwargs.get("search")
-        if query in self.search_games_by_query:
-            return self.search_games_by_query[query]
-        return self.generic_games
+class NoLiveSearchSteamClient:
+    async def search_games(self, **_kwargs: Any) -> list[GameCandidate]:
+        raise AssertionError("cached index recommendations must not call live Steam search")
 
 
 if __name__ == "__main__":

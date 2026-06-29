@@ -9,7 +9,6 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.star.filter.command import GreedyStr
 
-from .clients.rawg import RawgApiError, RawgClient, RawgConfigurationError
 from .clients.steam import SteamApiError, SteamClient
 from .services.formatter import (
     format_game_detail,
@@ -17,22 +16,21 @@ from .services.formatter import (
 )
 from .services.message_delivery import build_forward_message_chain
 from .services.preference_parser import PreferenceParser
-from .services.recommender import GameRecommender, adapt_preference_for_steam_source
 from .services.recommendation_limits import effective_result_limit
 from .services.steam_index import (
     STEAM_INDEX_FALLBACK_WARNING,
-    STEAM_INDEX_SCOPE_WARNING,
+    has_supported_steam_platform,
     SteamGameIndexService,
-    should_use_steam_index,
+    steam_only_scope_warning_for,
 )
 from .services.steam_price_bridge import SteamPriceBridge
 from .storage.repository import SQLiteCacheRepository
 
 PLUGIN_NAME = "astrbot_plugin_game_recommender"
-PLUGIN_VERSION = "0.3.1"
+PLUGIN_VERSION = "0.3.2"
 PLUGIN_DESCRIPTION = (
-    "默认无需 API Key 即可基于 Steam/PC 公开数据推荐游戏；"
-    "填写 RAWG API Key 后支持 PlayStation、Xbox、Nintendo Switch 候选召回与筛选。"
+    "基于 Steam/PC 公开数据、本地索引和标签相似度推荐游戏；"
+    "当前版本暂不做跨平台候选召回。"
 )
 
 
@@ -60,13 +58,7 @@ class GameRecommenderPlugin(Star):
             },
         )
         data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
-        self.cache = SQLiteCacheRepository(data_dir / "rawg_cache.sqlite3")
-        self.rawg_client = RawgClient(
-            client=self.http_client,
-            api_key=str(self.config.get("rawg_api_key", "") or ""),
-            cache=self.cache,
-            cache_ttl_hours=safe_int(self.config.get("cache_ttl_hours"), 24),
-        )
+        self.cache = SQLiteCacheRepository(data_dir / "steam_cache.sqlite3")
         self.steam_client = SteamClient(
             client=self.http_client,
             cache=self.cache,
@@ -74,15 +66,7 @@ class GameRecommenderPlugin(Star):
             default_country=str(self.config.get("default_region") or "CN"),
             language="schinese",
         )
-        self.game_source = (
-            self.rawg_client if self.rawg_client.is_configured() else self.steam_client
-        )
         self.preference_parser = PreferenceParser(context, self.provider_id)
-        self.recommender = GameRecommender(
-            self.game_source,
-            max_results=self.max_results,
-            steam_source=self.steam_client,
-        )
         self.steam_index = SteamGameIndexService(
             steam_client=self.steam_client,
             cache=self.cache,
@@ -115,24 +99,26 @@ class GameRecommenderPlugin(Star):
         if not text:
             yield event.plain_result(
                 "请输入需求，例如：/gamerec Switch 和 Steam 双人合作，"
-                "不要恐怖，预算 100 以内"
+                "不要恐怖，预算 100 以内（当前仅推荐 Steam/PC 候选）"
             )
             return
 
         try:
             preference = await self.preference_parser.parse_preference(event, text)
-            if not self.rawg_client.is_configured():
-                adapt_preference_for_steam_source(preference)
+            if warning := steam_only_scope_warning_for(preference):
+                preference.parse_warnings.append(warning)
+            if not has_supported_steam_platform(preference):
+                yield event.plain_result(preference.parse_warnings[-1])
+                return
             result_limit = effective_result_limit(self.max_results, preference.result_count)
             candidate_pool_size = (
                 max(result_limit * 3, result_limit)
                 if preference.budget is not None or self.price_bridge.is_available()
                 else None
             )
-            ranked_games = await self._recommend_with_preferred_source(
+            ranked_games = await self._recommend_with_steam_index(
                 preference,
                 limit=candidate_pool_size or result_limit,
-                candidate_pool_size=candidate_pool_size,
             )
             ranked_games = await self.price_bridge.enrich_ranked_games(ranked_games, preference)
             messages = await format_recommendation_messages_with_llm(
@@ -143,13 +129,6 @@ class GameRecommenderPlugin(Star):
                 ranked_games,
                 limit=result_limit,
             )
-        except RawgConfigurationError as exc:
-            yield event.plain_result(str(exc))
-            return
-        except RawgApiError as exc:
-            logger.warning(f"RAWG game recommendation failed: {exc}")
-            yield event.plain_result(f"RAWG 查询失败：{exc}")
-            return
         except SteamApiError as exc:
             logger.warning(f"Steam game recommendation failed: {exc}")
             yield event.plain_result(f"Steam 查询失败：{exc}")
@@ -177,24 +156,12 @@ class GameRecommenderPlugin(Star):
             return
 
         try:
-            candidates = await self.game_source.search_games(search=title, page_size=1)
+            candidates = await self.steam_client.search_games(search=title, page_size=1)
             if not candidates:
                 yield event.plain_result(f"没有查询到游戏：{title}")
                 return
-            candidate = candidates[0]
-            game = (
-                await self.rawg_client.get_game_detail(candidate.rawg_id)
-                if self.rawg_client.is_configured() and candidate.rawg_id is not None
-                else candidate
-            )
+            game = candidates[0]
             price_summary = await self.price_bridge.lookup(game.title)
-        except RawgConfigurationError as exc:
-            yield event.plain_result(str(exc))
-            return
-        except RawgApiError as exc:
-            logger.warning(f"RAWG game detail failed: {exc}")
-            yield event.plain_result(f"RAWG 查询失败：{exc}")
-            return
         except SteamApiError as exc:
             logger.warning(f"Steam game detail failed: {exc}")
             yield event.plain_result(f"Steam 查询失败：{exc}")
@@ -206,25 +173,17 @@ class GameRecommenderPlugin(Star):
 
         yield event.plain_result(format_game_detail(game, price_summary))
 
-    async def _recommend_with_preferred_source(
+    async def _recommend_with_steam_index(
         self,
         preference,
         limit: int,
-        candidate_pool_size: int | None,
     ):
-        if should_use_steam_index(preference):
-            ranked_games = await self.steam_index.recommend(preference, limit=limit)
-            if ranked_games:
-                return ranked_games
-            if STEAM_INDEX_FALLBACK_WARNING not in preference.parse_warnings:
-                preference.parse_warnings.append(STEAM_INDEX_FALLBACK_WARNING)
-        elif STEAM_INDEX_SCOPE_WARNING not in preference.parse_warnings:
-            preference.parse_warnings.append(STEAM_INDEX_SCOPE_WARNING)
-
-        return await self.recommender.recommend(
-            preference,
-            candidate_pool_size=candidate_pool_size,
-        )
+        ranked_games = await self.steam_index.recommend(preference, limit=limit)
+        if ranked_games:
+            return ranked_games
+        if STEAM_INDEX_FALLBACK_WARNING not in preference.parse_warnings:
+            preference.parse_warnings.append(STEAM_INDEX_FALLBACK_WARNING)
+        return []
 
 
 def safe_int(value: Any, default: int) -> int:

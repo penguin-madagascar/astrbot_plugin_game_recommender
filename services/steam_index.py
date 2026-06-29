@@ -11,10 +11,10 @@ from .similarity_ranker import (
 
 STEAM_INDEX_CACHE_KEY = "steam_index:entries"
 STEAM_INDEX_FALLBACK_WARNING = (
-    "Steam 索引推荐暂不可用，已降级为实时 Steam/RAWG 查询。"
+    "Steam 索引暂不可用，已尝试通过 Steam 公共搜索刷新候选；如果仍为空，请换更明确的标签或参考游戏。"
 )
-STEAM_INDEX_SCOPE_WARNING = (
-    "Steam 索引推荐仅覆盖 Steam/PC；其他平台继续使用 RAWG 数据源。"
+STEAM_ONLY_SCOPE_WARNING = (
+    "当前版本仅覆盖 Steam/PC 推荐，暂不支持 Switch、PlayStation、Xbox 等跨平台候选。"
 )
 STEAM_INDEX_PLATFORMS = {"steam", "pc"}
 
@@ -54,6 +54,8 @@ class SteamGameIndexService:
         preference: GamePreference,
         limit: int,
     ) -> list[RankedGame]:
+        if preference.platforms and not has_supported_steam_platform(preference):
+            return []
         entries = await self.load_entries()
         ranked = rank_entries(entries, preference, self.min_review_count, self.min_positive_ratio)
         if ranked:
@@ -73,11 +75,46 @@ class SteamGameIndexService:
         existing: list[GameCandidate] | None = None,
     ) -> list[GameCandidate]:
         entries = list(existing or [])
-        profile = build_profile_from_preference(
+        searched: set[str] = set()
+        profile = build_profile_from_preference(preference)
+        entries = await self.search_and_append(
+            entries,
+            search_terms_for(preference, profile),
+            searched,
+            reference_titles=preference.reference_games_like,
+        )
+
+        expanded_profile = build_profile_from_preference(
             preference,
             reference_candidates=reference_candidates(preference, entries),
         )
-        for query in search_terms_for(preference, profile):
+        entries = await self.search_and_append(
+            entries,
+            search_terms_for(preference, expanded_profile),
+            searched,
+            reference_titles=preference.reference_games_like,
+        )
+        entries = dedupe_entries(entries)
+        if entries:
+            await self.cache.set_json(
+                STEAM_INDEX_CACHE_KEY,
+                [dump_model(candidate) for candidate in entries],
+            )
+        return entries
+
+    async def search_and_append(
+        self,
+        entries: list[GameCandidate],
+        queries: list[str],
+        searched: set[str],
+        reference_titles: list[str],
+    ) -> list[GameCandidate]:
+        reference_keys = {normalize_text(title) for title in reference_titles}
+        for query in queries:
+            key = query.lower()
+            if key in searched:
+                continue
+            searched.add(key)
             try:
                 results = await self.steam_client.search_games(
                     search=query,
@@ -86,15 +123,12 @@ class SteamGameIndexService:
                 )
             except Exception:
                 continue
-            for candidate in results:
-                entries.append(await self.enrich_candidate(candidate))
-
-        entries = dedupe_entries(entries)
-        if entries:
-            await self.cache.set_json(
-                STEAM_INDEX_CACHE_KEY,
-                [dump_model(candidate) for candidate in entries],
-            )
+            is_reference_query = normalize_text(query) in reference_keys
+            for index, candidate in enumerate(results):
+                enriched = await self.enrich_candidate(candidate)
+                if is_reference_query and index == 0:
+                    enriched = mark_reference_query(enriched, query)
+                entries.append(enriched)
         return entries
 
     async def enrich_candidate(self, candidate: GameCandidate) -> GameCandidate:
@@ -113,10 +147,24 @@ class SteamGameIndexService:
         return validate_candidate(data)
 
 
-def should_use_steam_index(preference: GamePreference) -> bool:
-    return not preference.platforms or all(
+def steam_only_scope_warning_for(preference: GamePreference) -> str | None:
+    if unsupported_platforms(preference):
+        return STEAM_ONLY_SCOPE_WARNING
+    return None
+
+
+def has_supported_steam_platform(preference: GamePreference) -> bool:
+    return not preference.platforms or any(
         platform in STEAM_INDEX_PLATFORMS for platform in preference.platforms
     )
+
+
+def unsupported_platforms(preference: GamePreference) -> list[str]:
+    return [
+        platform
+        for platform in preference.platforms
+        if platform not in STEAM_INDEX_PLATFORMS
+    ]
 
 
 def rank_entries(
@@ -143,6 +191,7 @@ def reference_candidates(
         entry for entry in entries
         if entry.title.lower() in references
         or any(reference in entry.title.lower() for reference in references)
+        or any(reason.startswith("reference_query:") for reason in entry.source_reasons)
     ]
 
 
@@ -203,3 +252,17 @@ def dump_model(model: Any) -> dict[str, Any]:
 def validate_candidate(data: dict[str, Any]) -> GameCandidate:
     validator = getattr(GameCandidate, "model_validate", None)
     return validator(data) if validator else GameCandidate.parse_obj(data)
+
+
+def mark_reference_query(candidate: GameCandidate, query: str) -> GameCandidate:
+    data = dump_model(candidate)
+    reasons = list(data.get("source_reasons") or [])
+    marker = f"reference_query:{query}"
+    if marker not in reasons:
+        reasons.append(marker)
+    data["source_reasons"] = reasons
+    return validate_candidate(data)
+
+
+def normalize_text(value: str) -> str:
+    return " ".join(str(value or "").lower().split())

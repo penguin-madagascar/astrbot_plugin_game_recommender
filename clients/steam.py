@@ -74,7 +74,7 @@ class SteamReviewSummary:
 
 
 class SteamClient:
-    """Steam Store public API data source used when RAWG is not configured."""
+    """Steam Store public API data source for Steam-only recommendations."""
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class SteamClient:
         genres: list[str] | None = None,
         tags: list[str] | None = None,
         page_size: int = 20,
-        ordering: str = "-rating",
+        ordering: str = "-relevance",
     ) -> list[GameCandidate]:
         del ordering
         query = build_search_query(search, genres or [], tags or [])

@@ -6,12 +6,6 @@
     "_special": "select_provider",
     "default": ""
   },
-  "rawg_api_key": {
-    "type": "string",
-    "description": "RAWG API Key（可选）",
-    "hint": "留空时使用 Steam 公开数据源；填写后增强多平台候选召回和 RAWG 游戏资料。",
-    "default": ""
-  },
   "default_region": {
     "type": "string",
     "description": "默认地区代码",
@@ -53,13 +47,13 @@
   "cache_ttl_hours": {
     "type": "int",
     "description": "游戏数据查询缓存有效期（小时）",
-    "hint": "Steam/RAWG 查询结果的缓存时间；调大可减少请求，调小可获得更新数据。",
+    "hint": "Steam 查询结果的缓存时间；调大可减少请求，调小可获得更新数据。",
     "default": 24
   },
   "timeout_seconds": {
     "type": "int",
     "description": "HTTP 请求超时时间",
-    "hint": "Steam、RAWG 和价格查询的单次 HTTP 请求超时时间，单位秒。",
+    "hint": "Steam 和价格查询的单次 HTTP 请求超时时间，单位秒。",
     "default": 15
   }
 }
