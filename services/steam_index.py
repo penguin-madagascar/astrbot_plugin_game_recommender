@@ -7,6 +7,7 @@ from .similarity_ranker import (
     SteamTagProfile,
     build_profile_from_preference,
     rank_steam_candidates,
+    select_diverse_results,
 )
 from .tag_normalizer import candidate_canonical_tags
 
@@ -67,7 +68,7 @@ class SteamGameIndexService:
             profile_tag_weights=profile_tag_weights,
         )
         if ranked:
-            return ranked[:limit]
+            return select_diverse_results(ranked, limit)
 
         refreshed = await self.refresh_entries(preference, entries)
         ranked = rank_entries(
@@ -77,7 +78,7 @@ class SteamGameIndexService:
             self.min_positive_ratio,
             profile_tag_weights=profile_tag_weights,
         )
-        return ranked[:limit]
+        return select_diverse_results(ranked, limit)
 
     async def load_entries(self) -> list[GameCandidate]:
         payload = await self.cache.get_json(STEAM_INDEX_CACHE_KEY, self.ttl_hours)

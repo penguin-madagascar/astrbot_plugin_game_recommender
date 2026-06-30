@@ -146,6 +146,98 @@ def rank_steam_candidates(
     )
 
 
+def select_diverse_results(games: list[RankedGame], limit: int) -> list[RankedGame]:
+    if limit <= 0 or not games:
+        return []
+
+    selected: list[RankedGame] = []
+    for group in primary_match_groups(games):
+        group_selected: list[RankedGame] = []
+        remaining = list(group)
+        while remaining and len(selected) < limit:
+            best_index, best_game, best_penalty = max(
+                (
+                    (
+                        index,
+                        game,
+                        diversity_penalty_for(game, group_selected),
+                    )
+                    for index, game in enumerate(remaining)
+                ),
+                key=lambda item: (
+                    float(item[1].score) - item[2] * 15,
+                    -item[0],
+                ),
+            )
+            if best_penalty > 0:
+                best_game = copy_ranked_game(
+                    best_game,
+                    {
+                        "facts": copy_facts(
+                            best_game.facts,
+                            {"diversity_penalty": best_penalty},
+                        )
+                    },
+                )
+            selected.append(best_game)
+            group_selected.append(best_game)
+            del remaining[best_index]
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def primary_match_groups(games: list[RankedGame]) -> list[list[RankedGame]]:
+    groups: list[list[RankedGame]] = []
+    current: list[RankedGame] = []
+    current_key: tuple[int, float] | None = None
+    for game in games:
+        key = (TIER_ORDER.get(game.tier, 9), round(game.facts.match_score, 6))
+        if current and key != current_key:
+            groups.append(current)
+            current = []
+        current.append(game)
+        current_key = key
+    if current:
+        groups.append(current)
+    return groups
+
+
+def diversity_penalty_for(game: RankedGame, selected: list[RankedGame]) -> float:
+    if not selected:
+        return 0.0
+    tags = set(diversity_tags_for(game))
+    if not tags:
+        return 0.0
+    used_tags: set[str] = set()
+    for selected_game in selected:
+        used_tags.update(diversity_tags_for(selected_game))
+    if not used_tags:
+        return 0.0
+    return min(len(tags & used_tags) / len(tags), 1.0)
+
+
+def diversity_tags_for(game: RankedGame) -> list[str]:
+    ignored = {
+        *MULTIPLAYER_TAGS,
+        "singleplayer",
+        "chinese",
+        *game.facts.matched_like_terms,
+    }
+    return [
+        tag
+        for tag in candidate_canonical_tags(game)
+        if tag not in ignored
+    ]
+
+
+def copy_facts(facts: GameFacts, update: dict[str, Any]) -> GameFacts:
+    copier = getattr(facts, "model_copy", None)
+    if copier:
+        return copier(update=update)
+    return facts.copy(update=update)
+
+
 def reference_expansion_tags(candidate: GameCandidate) -> list[str]:
     ignored = {"singleplayer", "chinese"}
     return [tag for tag in candidate_canonical_tags(candidate) if tag not in ignored]

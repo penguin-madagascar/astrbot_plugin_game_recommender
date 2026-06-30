@@ -6,6 +6,7 @@ from typing import Any
 from astrbot_plugin_game_recommender.services.similarity_ranker import (
     build_profile_from_preference,
     rank_steam_candidates,
+    select_diverse_results,
 )
 from astrbot_plugin_game_recommender.services.steam_index import SteamGameIndexService
 from astrbot_plugin_game_recommender.storage.models import GameCandidate, GamePreference
@@ -131,6 +132,37 @@ class RecommendationQualityTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(ranked[0].facts.match_score, ranked[1].facts.match_score)
 
+    async def test_cached_index_applies_diversity_after_primary_ranking(self) -> None:
+        cache = MemoryCache(
+            {
+                "steam_index:entries": [
+                    dump_model(
+                        steam_game("Farm Co-op A", ["Co-op", "Puzzle", "Farming", "Crafting"])
+                    ),
+                    dump_model(
+                        steam_game("Farm Co-op B", ["Co-op", "Puzzle", "Farming", "Crafting"])
+                    ),
+                    dump_model(
+                        steam_game("Story Co-op", ["Co-op", "Puzzle", "Story Rich", "Choices Matter"])
+                    ),
+                    dump_model(
+                        steam_game("Lower Match Builder", ["Co-op", "Building", "Automation"])
+                    ),
+                ]
+            }
+        )
+        service = SteamGameIndexService(NoLiveSearchSteamClient(), cache)
+
+        ranked = await service.recommend(
+            GamePreference(platforms=["steam"], genres_like=["co-op", "puzzle"]),
+            limit=4,
+        )
+
+        self.assertEqual(
+            [game.title for game in ranked],
+            ["Farm Co-op A", "Story Co-op", "Farm Co-op B", "Lower Match Builder"],
+        )
+
     def test_exclude_tags_filter_horror_and_singleplayer_only(self) -> None:
         ranked = rank_steam_candidates(
             [
@@ -149,6 +181,28 @@ class RecommendationQualityTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([game.title for game in ranked], ["Safe Co-op Puzzle"])
+
+    def test_diversity_rerank_only_changes_equal_primary_matches(self) -> None:
+        ranked = rank_steam_candidates(
+            [
+                steam_game("Farm Co-op A", ["Co-op", "Puzzle", "Farming", "Crafting"]),
+                steam_game("Farm Co-op B", ["Co-op", "Puzzle", "Farming", "Crafting"]),
+                steam_game("Story Co-op", ["Co-op", "Puzzle", "Story Rich", "Choices Matter"]),
+                steam_game("Lower Match Builder", ["Co-op", "Building", "Automation"]),
+            ],
+            build_profile_from_preference(
+                GamePreference(platforms=["steam"], genres_like=["co-op", "puzzle"])
+            ),
+        )
+
+        selected = select_diverse_results(ranked, limit=4)
+
+        self.assertEqual(
+            [game.title for game in selected],
+            ["Farm Co-op A", "Story Co-op", "Farm Co-op B", "Lower Match Builder"],
+        )
+        self.assertGreater(selected[2].facts.diversity_penalty, 0)
+        self.assertLess(selected[3].facts.match_score, selected[2].facts.match_score)
 
 
 def steam_game(
